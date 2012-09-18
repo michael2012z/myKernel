@@ -1,0 +1,9 @@
+ARCH=arm CROSS_COMPILE=/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-
+
+ARCH		:= $(shell if [ -f cross_compile ]; then \
+                                sed -n '1p' cross_compile; \
+                                fi)
+
+CROSS_COMPILE	:= $(shell if [ -f cross_compile ]; then \
+                                sed -n '2p' cross_compile; \
+                                fi)
