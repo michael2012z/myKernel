@@ -675,13 +675,10 @@ static void iwl_set_pwr_vmain(struct iwl_trans *trans)
 static u16 iwl_pciexp_link_ctrl(struct iwl_trans *trans)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
-	int pos;
 	u16 pci_lnk_ctl;
 
-	struct pci_dev *pci_dev = trans_pcie->pci_dev;
-
-	pos = pci_pcie_cap(pci_dev);
-	pci_read_config_word(pci_dev, pos + PCI_EXP_LNKCTL, &pci_lnk_ctl);
+	pcie_capability_read_word(trans_pcie->pci_dev, PCI_EXP_LNKCTL,
+				  &pci_lnk_ctl);
 	return pci_lnk_ctl;
 }
 
@@ -1442,6 +1439,7 @@ static int iwl_trans_pcie_start_hw(struct iwl_trans *trans)
 	return err;
 
 err_free_irq:
+	trans_pcie->irq_requested = false;
 	free_irq(trans_pcie->irq, trans);
 error:
 	iwl_free_isr_ict(trans);
