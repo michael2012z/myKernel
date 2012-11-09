@@ -1196,7 +1196,7 @@ static void __init eva_init(void)
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Early BRESP enable, Shared attribute override enable, 32K*8way */
-	l2x0_init(__io(0xf0002000), 0x40440000, 0x82000fff);
+	l2x0_init(IOMEM(0xf0002000), 0x40440000, 0x82000fff);
 #endif
 
 	i2c_register_board_info(0, i2c0_devices, ARRAY_SIZE(i2c0_devices));
@@ -1209,10 +1209,10 @@ static void __init eva_init(void)
 
 	eva_clock_init();
 
-	rmobile_add_device_to_domain(&r8a7740_pd_a4lc, &lcdc0_device);
-	rmobile_add_device_to_domain(&r8a7740_pd_a4lc, &hdmi_lcdc_device);
+	rmobile_add_device_to_domain("A4LC", &lcdc0_device);
+	rmobile_add_device_to_domain("A4LC", &hdmi_lcdc_device);
 	if (usb)
-		rmobile_add_device_to_domain(&r8a7740_pd_a3sp, usb);
+		rmobile_add_device_to_domain("A3SP", usb);
 }
 
 static void __init eva_earlytimer_init(void)
