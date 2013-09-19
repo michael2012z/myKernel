@@ -383,14 +383,14 @@ static ssize_t iio_read_channel_info(struct device *dev,
 		scale_db = true;
 	case IIO_VAL_INT_PLUS_MICRO:
 		if (val2 < 0)
-			return sprintf(buf, "-%d.%06u%s\n", val, -val2,
+			return sprintf(buf, "-%ld.%06u%s\n", abs(val), -val2,
 				scale_db ? " dB" : "");
 		else
 			return sprintf(buf, "%d.%06u%s\n", val, val2,
 				scale_db ? " dB" : "");
 	case IIO_VAL_INT_PLUS_NANO:
 		if (val2 < 0)
-			return sprintf(buf, "-%d.%09u\n", val, -val2);
+			return sprintf(buf, "-%ld.%09u\n", abs(val), -val2);
 		else
 			return sprintf(buf, "%d.%09u\n", val, val2);
 	case IIO_VAL_FRACTIONAL:
@@ -691,21 +691,34 @@ static int iio_device_add_channel_sysfs(struct iio_dev *indio_dev,
 
 	if (chan->channel < 0)
 		return 0;
-	for_each_set_bit(i, &chan->info_mask, sizeof(long)*8) {
-		ret = __iio_add_chan_devattr(iio_chan_info_postfix[i/2],
+	for_each_set_bit(i, &chan->info_mask_separate, sizeof(long)*8) {
+		ret = __iio_add_chan_devattr(iio_chan_info_postfix[i],
 					     chan,
 					     &iio_read_channel_info,
 					     &iio_write_channel_info,
-					     i/2,
-					     !(i%2),
+					     i,
+					     0,
 					     &indio_dev->dev,
 					     &indio_dev->channel_attr_list);
-		if (ret == -EBUSY && (i%2 == 0)) {
-			ret = 0;
-			continue;
-		}
 		if (ret < 0)
 			goto error_ret;
+		attrcount++;
+	}
+	for_each_set_bit(i, &chan->info_mask_shared_by_type, sizeof(long)*8) {
+		ret = __iio_add_chan_devattr(iio_chan_info_postfix[i],
+					     chan,
+					     &iio_read_channel_info,
+					     &iio_write_channel_info,
+					     i,
+					     1,
+					     &indio_dev->dev,
+					     &indio_dev->channel_attr_list);
+		if (ret == -EBUSY) {
+			ret = 0;
+			continue;
+		} else if (ret < 0) {
+			goto error_ret;
+		}
 		attrcount++;
 	}
 
@@ -847,7 +860,7 @@ static void iio_dev_release(struct device *device)
 	kfree(indio_dev);
 }
 
-static struct device_type iio_dev_type = {
+struct device_type iio_device_type = {
 	.name = "iio_device",
 	.release = iio_dev_release,
 };
@@ -869,7 +882,7 @@ struct iio_dev *iio_device_alloc(int sizeof_priv)
 
 	if (dev) {
 		dev->dev.groups = dev->groups;
-		dev->dev.type = &iio_dev_type;
+		dev->dev.type = &iio_device_type;
 		dev->dev.bus = &iio_bus_type;
 		device_initialize(&dev->dev);
 		dev_set_drvdata(&dev->dev, (void *)dev);
@@ -898,6 +911,53 @@ void iio_device_free(struct iio_dev *dev)
 		put_device(&dev->dev);
 }
 EXPORT_SYMBOL(iio_device_free);
+
+static void devm_iio_device_release(struct device *dev, void *res)
+{
+	iio_device_free(*(struct iio_dev **)res);
+}
+
+static int devm_iio_device_match(struct device *dev, void *res, void *data)
+{
+	struct iio_dev **r = res;
+	if (!r || !*r) {
+		WARN_ON(!r || !*r);
+		return 0;
+	}
+	return *r == data;
+}
+
+struct iio_dev *devm_iio_device_alloc(struct device *dev, int sizeof_priv)
+{
+	struct iio_dev **ptr, *iio_dev;
+
+	ptr = devres_alloc(devm_iio_device_release, sizeof(*ptr),
+			   GFP_KERNEL);
+	if (!ptr)
+		return NULL;
+
+	/* use raw alloc_dr for kmalloc caller tracing */
+	iio_dev = iio_device_alloc(sizeof_priv);
+	if (iio_dev) {
+		*ptr = iio_dev;
+		devres_add(dev, ptr);
+	} else {
+		devres_free(ptr);
+	}
+
+	return iio_dev;
+}
+EXPORT_SYMBOL_GPL(devm_iio_device_alloc);
+
+void devm_iio_device_free(struct device *dev, struct iio_dev *iio_dev)
+{
+	int rc;
+
+	rc = devres_release(dev, devm_iio_device_release,
+			    devm_iio_device_match, iio_dev);
+	WARN_ON(rc);
+}
+EXPORT_SYMBOL_GPL(devm_iio_device_free);
 
 /**
  * iio_chrdev_open() - chrdev file open for buffer access and ioctls
@@ -959,6 +1019,10 @@ static const struct iio_buffer_setup_ops noop_ring_setup_ops;
 int iio_device_register(struct iio_dev *indio_dev)
 {
 	int ret;
+
+	/* If the calling driver did not initialize of_node, do it here */
+	if (!indio_dev->dev.of_node && indio_dev->dev.parent)
+		indio_dev->dev.of_node = indio_dev->dev.parent->of_node;
 
 	/* configure elements for the chrdev */
 	indio_dev->dev.devt = MKDEV(MAJOR(iio_devt), indio_dev->id);
