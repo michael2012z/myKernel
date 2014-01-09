@@ -141,11 +141,17 @@ static int be_mcc_compl_process(struct be_adapter *adapter,
 		subsystem = resp_hdr->subsystem;
 	}
 
+	if (opcode == OPCODE_LOWLEVEL_LOOPBACK_TEST &&
+	    subsystem == CMD_SUBSYSTEM_LOWLEVEL) {
+		complete(&adapter->et_cmd_compl);
+		return 0;
+	}
+
 	if (((opcode == OPCODE_COMMON_WRITE_FLASHROM) ||
 	     (opcode == OPCODE_COMMON_WRITE_OBJECT)) &&
 	    (subsystem == CMD_SUBSYSTEM_COMMON)) {
 		adapter->flash_status = compl_status;
-		complete(&adapter->flash_compl);
+		complete(&adapter->et_cmd_compl);
 	}
 
 	if (compl_status == MCC_STATUS_SUCCESS) {
@@ -1032,6 +1038,13 @@ int be_cmd_cq_create(struct be_adapter *adapter, struct be_queue_info *cq,
 	} else {
 		req->hdr.version = 2;
 		req->page_size = 1; /* 1 for 4K */
+
+		/* coalesce-wm field in this cmd is not relevant to Lancer.
+		 * Lancer uses COMMON_MODIFY_CQ to set this field
+		 */
+		if (!lancer_chip(adapter))
+			AMAP_SET_BITS(struct amap_cq_context_v2, coalescwm,
+				      ctxt, coalesce_wm);
 		AMAP_SET_BITS(struct amap_cq_context_v2, nodelay, ctxt,
 								no_delay);
 		AMAP_SET_BITS(struct amap_cq_context_v2, count, ctxt,
@@ -2010,6 +2023,9 @@ int be_cmd_rss_config(struct be_adapter *adapter, u8 *rsstable,
 			0x3ea83c02, 0x4a110304};
 	int status;
 
+	if (!(be_if_cap_flags(adapter) & BE_IF_FLAGS_RSS))
+		return 0;
+
 	if (mutex_lock_interruptible(&adapter->mbox_lock))
 		return -1;
 
@@ -2153,7 +2169,7 @@ int lancer_cmd_write_object(struct be_adapter *adapter, struct be_dma_mem *cmd,
 	be_mcc_notify(adapter);
 	spin_unlock_bh(&adapter->mcc_lock);
 
-	if (!wait_for_completion_timeout(&adapter->flash_compl,
+	if (!wait_for_completion_timeout(&adapter->et_cmd_compl,
 					 msecs_to_jiffies(60000)))
 		status = -1;
 	else
@@ -2248,8 +2264,8 @@ int be_cmd_write_flashrom(struct be_adapter *adapter, struct be_dma_mem *cmd,
 	be_mcc_notify(adapter);
 	spin_unlock_bh(&adapter->mcc_lock);
 
-	if (!wait_for_completion_timeout(&adapter->flash_compl,
-			msecs_to_jiffies(40000)))
+	if (!wait_for_completion_timeout(&adapter->et_cmd_compl,
+					 msecs_to_jiffies(40000)))
 		status = -1;
 	else
 		status = adapter->flash_status;
@@ -2360,6 +2376,7 @@ int be_cmd_loopback_test(struct be_adapter *adapter, u32 port_num,
 {
 	struct be_mcc_wrb *wrb;
 	struct be_cmd_req_loopback_test *req;
+	struct be_cmd_resp_loopback_test *resp;
 	int status;
 
 	spin_lock_bh(&adapter->mcc_lock);
@@ -2374,8 +2391,8 @@ int be_cmd_loopback_test(struct be_adapter *adapter, u32 port_num,
 
 	be_wrb_cmd_hdr_prepare(&req->hdr, CMD_SUBSYSTEM_LOWLEVEL,
 			OPCODE_LOWLEVEL_LOOPBACK_TEST, sizeof(*req), wrb, NULL);
-	req->hdr.timeout = cpu_to_le32(4);
 
+	req->hdr.timeout = cpu_to_le32(15);
 	req->pattern = cpu_to_le64(pattern);
 	req->src_port = cpu_to_le32(port_num);
 	req->dest_port = cpu_to_le32(port_num);
@@ -2383,12 +2400,15 @@ int be_cmd_loopback_test(struct be_adapter *adapter, u32 port_num,
 	req->num_pkts = cpu_to_le32(num_pkts);
 	req->loopback_type = cpu_to_le32(loopback_type);
 
-	status = be_mcc_notify_wait(adapter);
-	if (!status) {
-		struct be_cmd_resp_loopback_test *resp = embedded_payload(wrb);
-		status = le32_to_cpu(resp->status);
-	}
+	be_mcc_notify(adapter);
 
+	spin_unlock_bh(&adapter->mcc_lock);
+
+	wait_for_completion(&adapter->et_cmd_compl);
+	resp = embedded_payload(wrb);
+	status = le32_to_cpu(resp->status);
+
+	return status;
 err:
 	spin_unlock_bh(&adapter->mcc_lock);
 	return status;
