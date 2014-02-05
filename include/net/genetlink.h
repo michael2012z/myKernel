@@ -73,6 +73,7 @@ struct genl_family {
  * @attrs: netlink attributes
  * @_net: network namespace
  * @user_ptr: user pointers
+ * @dst_sk: destination socket
  */
 struct genl_info {
 	u32			snd_seq;
@@ -85,6 +86,7 @@ struct genl_info {
 	struct net *		_net;
 #endif
 	void *			user_ptr[2];
+	struct sock *		dst_sk;
 };
 
 static inline struct net *genl_info_net(struct genl_info *info)
@@ -177,6 +179,8 @@ void genl_notify(struct genl_family *family,
 		 struct sk_buff *skb, struct net *net, u32 portid,
 		 u32 group, struct nlmsghdr *nlh, gfp_t flags);
 
+struct sk_buff *genlmsg_new_unicast(size_t payload, struct genl_info *info,
+				    gfp_t flags);
 void *genlmsg_put(struct sk_buff *skb, u32 portid, u32 seq,
 		  struct genl_family *family, int flags, u8 cmd);
 
@@ -265,7 +269,7 @@ static inline int genlmsg_multicast_netns(struct genl_family *family,
 					  struct net *net, struct sk_buff *skb,
 					  u32 portid, unsigned int group, gfp_t flags)
 {
-	if (group >= family->n_mcgrps)
+	if (WARN_ON_ONCE(group >= family->n_mcgrps))
 		return -EINVAL;
 	group = family->mcgrp_offset + group;
 	return nlmsg_multicast(net->genl_sock, skb, portid, group, flags);
@@ -283,9 +287,6 @@ static inline int genlmsg_multicast(struct genl_family *family,
 				    struct sk_buff *skb, u32 portid,
 				    unsigned int group, gfp_t flags)
 {
-	if (group >= family->n_mcgrps)
-		return -EINVAL;
-	group = family->mcgrp_offset + group;
 	return genlmsg_multicast_netns(family, &init_net, skb,
 				       portid, group, flags);
 }
@@ -387,6 +388,9 @@ static inline struct sk_buff *genlmsg_new(size_t payload, gfp_t flags)
 static inline int genl_set_err(struct genl_family *family, struct net *net,
 			       u32 portid, u32 group, int code)
 {
+	if (WARN_ON_ONCE(group >= family->n_mcgrps))
+		return -EINVAL;
+	group = family->mcgrp_offset + group;
 	return netlink_set_err(net->genl_sock, portid, group, code);
 }
 
