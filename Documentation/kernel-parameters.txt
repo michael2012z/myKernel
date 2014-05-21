@@ -804,13 +804,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	dhash_entries=	[KNL]
 			Set number of hash buckets for dentry cache.
 
-	digi=		[HW,SERIAL]
-			IO parameters + enable/disable command.
-
-	digiepca=	[HW,SERIAL]
-			See drivers/char/README.epca and
-			Documentation/serial/digiepca.txt.
-
 	disable=	[IPV6]
 			See Documentation/networking/ipv6.txt.
 
@@ -2225,10 +2218,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	noreplace-smp	[X86-32,SMP] Don't replace SMP instructions
 			with UP alternatives
 
-	nordrand	[X86] Disable the direct use of the RDRAND
-			instruction even if it is supported by the
-			processor.  RDRAND is still available to user
-			space applications.
+	nordrand	[X86] Disable kernel use of the RDRAND and
+			RDSEED instructions even if they are supported
+			by the processor.  RDRAND and RDSEED are still
+			available to user space applications.
 
 	noresume	[SWSUSP] Disables resume and restores original swap
 			space.
@@ -2562,6 +2555,13 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			all PCIe root ports use INTx for all services).
 
 	pcmv=		[HW,PCMCIA] BadgePAD 4
+
+	pd_ignore_unused
+			[PM]
+			Keep all power-domains already enabled by bootloader on,
+			even if no driver has claimed them. This is useful
+			for debug and development, but should not be
+			needed on a platform with proper driver support.
 
 	pd.		[PARIDE]
 			See Documentation/blockdev/paride.txt.
@@ -2932,9 +2932,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	rhash_entries=	[KNL,NET]
 			Set number of hash buckets for route cache
 
-	riscom8=	[HW,SERIAL]
-			Format: <io_board1>[,<io_board2>[,...<io_boardN>]]
-
 	ro		[KNL] Mount root device read-only on boot
 
 	root=		[KNL] Root filesystem
@@ -3075,9 +3072,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	sonypi.*=	[HW] Sony Programmable I/O Control Device driver
 			See Documentation/laptops/sonypi.txt
-
-	specialix=	[HW,SERIAL] Specialix multi-serial port adapter
-			See Documentation/serial/specialix.txt.
 
 	spia_io_base=	[HW,MTD]
 	spia_fio_base=
