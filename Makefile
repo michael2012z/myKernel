@@ -4,11 +4,11 @@ SUBLEVEL = 0
 EXTRAVERSION = -rc1
 NAME = Shuffling Zombie Juror
 
-#VERSION = 3
-#PATCHLEVEL = 9
-#SUBLEVEL = 99
-#EXTRAVERSION = -michael
-#NAME = Latest
+VERSION = 3
+PATCHLEVEL = 99
+SUBLEVEL = 99
+EXTRAVERSION = -michael
+NAME = Latest
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
