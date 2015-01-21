@@ -1,7 +1,7 @@
 VERSION = 3
 PATCHLEVEL = 19
 SUBLEVEL = 0
-EXTRAVERSION = -rc1
+EXTRAVERSION = -rc5
 NAME = Diseased Newt
 
 VERSION = 3
@@ -397,6 +397,7 @@ USERINCLUDE    := \
 # Needed to be compatible with the O= option
 LINUXINCLUDE    := \
 		-I$(srctree)/arch/$(hdr-arch)/include \
+		-Iarch/$(hdr-arch)/include/generated/uapi \
 		-Iarch/$(hdr-arch)/include/generated \
 		$(if $(KBUILD_SRC), -I$(srctree)/include) \
 		-Iinclude \
