@@ -2311,6 +2311,8 @@ static int send_subvol_begin(struct send_ctx *sctx)
 	read_extent_buffer(leaf, name, (unsigned long)(ref + 1), namelen);
 	btrfs_release_path(path);
 
+	michaelpx("name = %s\n", name);
+
 	if (parent_root) {
 		ret = begin_cmd(sctx, BTRFS_SEND_C_SNAPSHOT);
 		if (ret < 0)
@@ -2347,6 +2349,7 @@ static int send_truncate(struct send_ctx *sctx, u64 ino, u64 gen, u64 size)
 	int ret = 0;
 	struct fs_path *p;
 
+	michaelpx("size = %llu\n", size);
 verbose_printk("btrfs: send_truncate %llu size=%llu\n", ino, size);
 
 	p = fs_path_alloc();
@@ -5593,6 +5596,7 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 	 * making it RW. This also protects against deletion.
 	 */
 	spin_lock(&send_root->root_item_lock);
+	michaelpx("send_in_progress = %d\n", send_root->send_in_progress);
 	send_root->send_in_progress++;
 	spin_unlock(&send_root->root_item_lock);
 
@@ -5685,6 +5689,7 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 		goto out;
 	}
 
+	michaelpx("clone_sources_count = %llu\n", arg->clone_sources_count);
 	if (arg->clone_sources_count) {
 		clone_sources_tmp = vmalloc(arg->clone_sources_count *
 				sizeof(*arg->clone_sources));
