@@ -505,6 +505,8 @@ static struct btrfs_path *alloc_path_for_send(void)
 	return path;
 }
 
+static char michael_write_buf[BTRFS_SEND_BUF_SIZE] = {(char)0};
+
 static int write_buf(struct file *filp, const void *buf, u32 len, loff_t *off)
 {
 	int ret;
@@ -513,6 +515,11 @@ static int write_buf(struct file *filp, const void *buf, u32 len, loff_t *off)
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
+
+	/* @@: print the buf to debug */
+	memset(michael_write_buf, (char)0, BTRFS_SEND_BUF_SIZE);
+	memcpy(michael_write_buf, (__force const char __user *)buf, len);
+	michaelpx("len = %d, off = %llu, buf = %s\n", len, *off, michael_write_buf);
 
 	while (pos < len) {
 		ret = vfs_write(filp, (__force const char __user *)buf + pos,
@@ -637,6 +644,8 @@ static int send_header(struct send_ctx *sctx)
 {
 	struct btrfs_stream_header hdr;
 
+	michaelpx("\n");
+
 	strcpy(hdr.magic, BTRFS_SEND_STREAM_MAGIC);
 	hdr.version = cpu_to_le32(BTRFS_SEND_STREAM_VERSION);
 
@@ -650,6 +659,8 @@ static int send_header(struct send_ctx *sctx)
 static int begin_cmd(struct send_ctx *sctx, int cmd)
 {
 	struct btrfs_cmd_header *hdr;
+
+	michaelpx("cmd = %x\n", cmd);
 
 	if (WARN_ON(!sctx->send_buf))
 		return -EINVAL;
@@ -1504,6 +1515,8 @@ static int gen_unique_name(struct send_ctx *sctx,
 				ino, gen, idx);
 		ASSERT(len < sizeof(tmp));
 
+		michaelpx("unique name : %s\n", tmp);
+
 		di = btrfs_lookup_dir_item(NULL, sctx->send_root,
 				path, BTRFS_FIRST_FREE_OBJECTID,
 				tmp, strlen(tmp), 0);
@@ -2286,6 +2299,7 @@ static int send_subvol_begin(struct send_ctx *sctx)
 		return -ENOMEM;
 	}
 
+	/* @@: I think searching for "BACKREF" is to find the folder it belong to. */
 	key.objectid = send_root->objectid;
 	key.type = BTRFS_ROOT_BACKREF_KEY;
 	key.offset = 0;
@@ -2540,6 +2554,8 @@ verbose_printk("btrfs: send_create_inode %llu\n", ino);
 		ret = -ENOTSUPP;
 		goto out;
 	}
+	
+	michaelpx("cmd = %d\n", cmd);
 
 	ret = begin_cmd(sctx, cmd);
 	if (ret < 0)
@@ -2549,6 +2565,7 @@ verbose_printk("btrfs: send_create_inode %llu\n", ino);
 	if (ret < 0)
 		goto out;
 
+	/* @@: put in file path and data */
 	TLV_PUT_PATH(sctx, BTRFS_SEND_A_PATH, p);
 	TLV_PUT_U64(sctx, BTRFS_SEND_A_INO, ino);
 
@@ -2653,7 +2670,9 @@ static int send_create_inode_if_needed(struct send_ctx *sctx)
 	int ret;
 
 	if (S_ISDIR(sctx->cur_inode_mode)) {
+	  /* @@: ? what's the meaning */
 		ret = did_create_dir(sctx, sctx->cur_ino);
+		michaelpx("ret = %d\n", ret);
 		if (ret < 0)
 			goto out;
 		if (ret) {
@@ -5399,6 +5418,8 @@ static int changed_cb(struct btrfs_root *left_root,
 	sctx->right_path = right_path;
 	sctx->cmp_key = key;
 
+	/* @@: the current inode may be under some operation, 
+	 * ex. move, rename, chmod, chown */
 	ret = finish_inode_if_needed(sctx, 0);
 	if (ret < 0)
 		goto out;
@@ -5431,6 +5452,9 @@ static int full_send_tree(struct send_ctx *sctx)
 	struct btrfs_path *path;
 	struct extent_buffer *eb;
 	int slot;
+	u64 michael_send_count = 0;
+
+	michaelpx("\n");
 
 	path = alloc_path_for_send();
 	if (!path)
@@ -5450,6 +5474,8 @@ static int full_send_tree(struct send_ctx *sctx)
 		eb = path->nodes[0];
 		slot = path->slots[0];
 		btrfs_item_key_to_cpu(eb, &found_key, slot);
+		michael_send_count++;
+		michaelpx("this is the %llu th inode item to send\n", michael_send_count);
 
 		ret = changed_cb(send_root, NULL, path, NULL,
 				&found_key, BTRFS_COMPARE_TREE_NEW, sctx);
@@ -5778,12 +5804,16 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 			NULL);
 	sort_clone_roots = 1;
 
+	/*  @@: sync the tree by ending transaction */
 	ret = ensure_commit_roots_uptodate(sctx);
 	if (ret)
 		goto out;
 
 	current->journal_info = BTRFS_SEND_TRANS_STUB;
+	michaelpx("sctx->flags = %llx\n", sctx->flags);
+	michaelpx("pre send_subvol()\n");
 	ret = send_subvol(sctx);
+	michaelpx("post send_subvol()\n");
 	current->journal_info = NULL;
 	if (ret < 0)
 		goto out;
