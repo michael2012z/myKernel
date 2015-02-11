@@ -512,13 +512,19 @@ static int write_buf(struct file *filp, const void *buf, u32 len, loff_t *off)
 	int ret;
 	mm_segment_t old_fs;
 	u32 pos = 0;
+	int i = 0;
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
 	/* @@: print the buf to debug */
 	memset(michael_write_buf, (char)0, BTRFS_SEND_BUF_SIZE);
-	memcpy(michael_write_buf, (__force const char __user *)buf, len);
+	for (i = 0; i< len; i++) {
+	  if (((char*)buf)[i] == '\0')
+		michael_write_buf[i] = ' ';
+	  else
+		michael_write_buf[i] = ((char*)buf)[i];
+	}
 	michaelpx("len = %d, off = %llu, buf = %s\n", len, *off, michael_write_buf);
 
 	while (pos < len) {
@@ -5475,7 +5481,7 @@ static int full_send_tree(struct send_ctx *sctx)
 		slot = path->slots[0];
 		btrfs_item_key_to_cpu(eb, &found_key, slot);
 		michael_send_count++;
-		michaelpx("this is the %llu th inode item to send\n", michael_send_count);
+		michaelpx("this is the %llu th item (found_key.type = %d) to send\n", michael_send_count, found_key.type);
 
 		ret = changed_cb(send_root, NULL, path, NULL,
 				&found_key, BTRFS_COMPARE_TREE_NEW, sctx);
