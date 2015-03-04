@@ -2805,6 +2805,7 @@ static int submit_extent_page(int rw, struct extent_io_tree *tree,
 	size_t page_size = min_t(size_t, size, PAGE_CACHE_SIZE);
 
 	if (bio_ret && *bio_ret) {
+	  michaelpx("roadmark\n");
 		bio = *bio_ret;
 		if (old_compressed)
 			contig = bio->bi_iter.bi_sector == sector;
@@ -2816,10 +2817,12 @@ static int submit_extent_page(int rw, struct extent_io_tree *tree,
 		    bio_add_page(bio, page, page_size, offset) < page_size) {
 			ret = submit_one_bio(rw, bio, mirror_num,
 					     prev_bio_flags);
+			michaelpx("roadmark: ret = %x\n", ret);
 			if (ret < 0)
 				return ret;
 			bio = NULL;
 		} else {
+		  michaelpx("roadmark\n");
 			return 0;
 		}
 	}
@@ -3332,6 +3335,9 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 	int nr = 0;
 	bool compressed;
 
+	if(tree->ops)
+	  michaelpx("writepage_start_hook = %x, writepage_end_io_hook = %x\n", (unsigned)tree->ops->writepage_start_hook, (unsigned)tree->ops->writepage_end_io_hook);
+
 	if (tree->ops && tree->ops->writepage_start_hook) {
 		ret = tree->ops->writepage_start_hook(page, start,
 						      page_end);
@@ -3373,6 +3379,7 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 							 page_end, NULL, 1);
 			break;
 		}
+		michaelpx("cur = %x, end = %x, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
 		em = epd->get_extent(inode, page, pg_offset, cur,
 				     end - cur + 1, 1);
 		if (IS_ERR_OR_NULL(em)) {
@@ -3380,6 +3387,8 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 			ret = PTR_ERR_OR_ZERO(em);
 			break;
 		}
+		michaelpx("get_extent():\n");
+		michael_print_extent_map(em);
 
 		extent_offset = cur - em->start;
 		em_end = extent_map_end(em);
@@ -3451,6 +3460,7 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 		cur = cur + iosize;
 		pg_offset += iosize;
 		nr++;
+		michaelpx("cur = %x, end = %x, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
 	}
 done:
 	*nr_ret = nr;
@@ -3960,6 +3970,9 @@ retry:
 			min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1))) {
 		unsigned i;
 
+		michaelpx("nr_pages = %x, index = %x, end = %x\n", nr_pages, index, end);
+		michael_print_pagevec(&pvec);
+
 		scanned = 1;
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
@@ -3972,28 +3985,33 @@ retry:
 			 * mapping
 			 */
 			if (!trylock_page(page)) {
+			  michaelpx("roadmark");
 				flush_fn(data);
 				lock_page(page);
 			}
 
 			if (unlikely(page->mapping != mapping)) {
+			  michaelpx("roadmark");
 				unlock_page(page);
 				continue;
 			}
 
 			if (!wbc->range_cyclic && page->index > end) {
+			  michaelpx("roadmark");
 				done = 1;
 				unlock_page(page);
 				continue;
 			}
 
 			if (wbc->sync_mode != WB_SYNC_NONE) {
+			  michaelpx("roadmark");
 				if (PageWriteback(page))
 					flush_fn(data);
 				wait_on_page_writeback(page);
 			}
 
 			if (PageWriteback(page) ||
+				michaelpx("roadmark");
 			    !clear_page_dirty_for_io(page)) {
 				unlock_page(page);
 				continue;

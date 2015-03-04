@@ -5185,9 +5185,14 @@ int btrfs_delalloc_reserve_metadata(struct inode *inode, u64 num_bytes)
 		extra_reserve = 1;
 	}
 
+	michaelpx("outstanding_extents = %x, reserved_extents = %x, nr_extents = %x, extra_reserve = %x\n", BTRFS_I(inode)->outstanding_extents, BTRFS_I(inode)->reserved_extents, nr_extents, extra_reserve);
+
 	to_reserve = btrfs_calc_trans_metadata_size(root, nr_extents);
+	michaelpx("to_reserve = %llx\n", to_reserve);
 	to_reserve += calc_csum_metadata_size(inode, num_bytes, 1);
+	michaelpx("to_reserve = %llx\n", to_reserve);
 	csum_bytes = BTRFS_I(inode)->csum_bytes;
+	michaelpx("csum_bytes = %llx\n", csum_bytes);
 	spin_unlock(&BTRFS_I(inode)->lock);
 
 	if (root->fs_info->quota_enabled) {

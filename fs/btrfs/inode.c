@@ -1710,6 +1710,8 @@ int btrfs_merge_bio_hook(int rw, struct page *page, unsigned long offset,
 	u64 map_length;
 	int ret;
 
+	michaelpx("roadmark");
+
 	if (bio_flags & EXTENT_BIO_COMPRESSED)
 		return 0;
 
@@ -1779,6 +1781,8 @@ static int btrfs_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 	int skip_sum;
 	int metadata = 0;
 	int async = !atomic_read(&BTRFS_I(inode)->sync_writers);
+
+	michaelpx("roadmark");
 
 	skip_sum = BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM;
 
@@ -1938,6 +1942,7 @@ static int btrfs_writepage_start_hook(struct page *page, u64 start, u64 end)
 	struct btrfs_writepage_fixup *fixup;
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 
+	michaelpx("roadmark");
 	/* this page is properly in the ordered list */
 	if (TestClearPagePrivate2(page))
 		return 0;
@@ -2900,6 +2905,8 @@ static int btrfs_writepage_end_io_hook(struct page *page, u64 start, u64 end,
 	struct btrfs_workqueue *wq;
 	btrfs_work_func_t func;
 
+	michaelpx("roadmark");
+
 	trace_btrfs_writepage_end_io_hook(page, start, end, uptodate);
 
 	ClearPagePrivate2(page);
@@ -2969,6 +2976,8 @@ static int btrfs_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
 	struct inode *inode = page->mapping->host;
 	struct extent_io_tree *io_tree = &BTRFS_I(inode)->io_tree;
 	struct btrfs_root *root = BTRFS_I(inode)->root;
+
+	michaelpx("roadmark");
 
 	if (PageChecked(page)) {
 		ClearPageChecked(page);
@@ -6058,6 +6067,8 @@ static int btrfs_create(struct inode *dir, struct dentry *dentry,
 	u64 objectid;
 	u64 index = 0;
 
+	michaelpx("roadmark\n");
+
 	/*
 	 * 2 for inode item and ref
 	 * 2 for dir items
@@ -6474,6 +6485,7 @@ again:
 		extent_end = ALIGN(extent_start + size, root->sectorsize);
 	}
 next:
+	michaelpx("found_type = %x, start = %x,  extent_start = %x, extent_end = %x\n", found_type, start, extent_start, extent_end);
 	if (start >= extent_end) {
 		path->slots[0]++;
 		if (path->slots[0] >= btrfs_header_nritems(leaf)) {
@@ -6566,6 +6578,7 @@ next:
 			kunmap(page);
 			btrfs_mark_buffer_dirty(leaf);
 		}
+		/* @@: what's doing here */
 		set_extent_uptodate(io_tree, em->start,
 				    extent_map_end(em) - 1, NULL, GFP_NOFS);
 		goto insert;
@@ -8093,7 +8106,7 @@ static int btrfs_writepage(struct page *page, struct writeback_control *wbc)
 {
 	struct extent_io_tree *tree;
 
-
+	michaelpx("roadmark\n");
 	if (current->flags & PF_MEMALLOC) {
 		redirty_page_for_writepage(wbc, page);
 		unlock_page(page);
@@ -8108,6 +8121,8 @@ static int btrfs_writepages(struct address_space *mapping,
 {
 	struct extent_io_tree *tree;
 
+	michael_print_address_space(mapping);
+	michael_print_writeback_control(wbc);
 	tree = &BTRFS_I(mapping->host)->io_tree;
 	return extent_writepages(tree, mapping, btrfs_get_extent, wbc);
 }

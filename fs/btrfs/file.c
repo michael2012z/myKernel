@@ -1483,13 +1483,18 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 
 	nrptrs = min(DIV_ROUND_UP(iov_iter_count(i), PAGE_CACHE_SIZE),
 			PAGE_CACHE_SIZE / (sizeof(struct page *)));
+	michaelpx("iov_iter_count = %x, nrptrs = %x\n", iov_iter_count(i), nrptrs);
 	nrptrs = min(nrptrs, current->nr_dirtied_pause - current->nr_dirtied);
 	nrptrs = max(nrptrs, 8);
+	michaelpx("nrptrs = %x\n", nrptrs);
+	/* @@: nrptrs means number of page pointers */
 	pages = kmalloc(nrptrs * sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
+	/* @@: first page index in address space */
 	first_index = pos >> PAGE_CACHE_SHIFT;
+	michaelpx("first_index = %lx\n", first_index);
 
 	while (iov_iter_count(i) > 0) {
 		size_t offset = pos & (PAGE_CACHE_SIZE - 1);
@@ -1514,6 +1519,8 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 		}
 
 		reserve_bytes = num_pages << PAGE_CACHE_SHIFT;
+		michaelpx("offset = %x, write_bytes = %x, num_pages = %x, reserve_bytes = %x\n", offset, write_bytes, num_pages, reserve_bytes);
+
 		ret = btrfs_check_data_free_space(inode, reserve_bytes);
 		if (ret == -ENOSPC &&
 		    (BTRFS_I(inode)->flags & (BTRFS_INODE_NODATACOW |
@@ -1528,6 +1535,7 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 				num_pages = DIV_ROUND_UP(write_bytes + offset,
 							 PAGE_CACHE_SIZE);
 				reserve_bytes = num_pages << PAGE_CACHE_SHIFT;
+				michaelpx("offset = %x, write_bytes = %x, num_pages = %x, reserve_bytes = %x\n", offset, write_bytes, num_pages, reserve_bytes);
 				ret = 0;
 			} else {
 				ret = -ENOSPC;
@@ -1591,6 +1599,7 @@ again:
 			dirty_pages = DIV_ROUND_UP(copied + offset,
 						   PAGE_CACHE_SIZE);
 		}
+		michaelpx("copied = %x, write_bytes = %x, dirty_pages = %x\n", copied, write_bytes, dirty_pages);
 
 		/*
 		 * If we had a short copy we need to release the excess delaloc
@@ -1684,11 +1693,14 @@ static ssize_t __btrfs_direct_write(struct kiocb *iocb,
 
 	written = generic_file_direct_write(iocb, from, pos);
 
+	michaelpx("pos = %llx, written = %x\n", pos, written);
+
 	if (written < 0 || !iov_iter_count(from))
 		return written;
 
 	pos += written;
 	written_buffered = __btrfs_buffered_write(file, from, pos);
+	michaelpx("pos = %llx, written_buffered = %x\n", pos, written_buffered);
 	if (written_buffered < 0) {
 		err = written_buffered;
 		goto out;
@@ -1787,9 +1799,11 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 	update_time_for_write(inode);
 
 	start_pos = round_down(pos, root->sectorsize);
+	michaelpx("pos = %llx, root->sectorsize = %x, start_pos = %llx\n", pos, root->sectorsize, start_pos);
 	if (start_pos > i_size_read(inode)) {
 		/* Expand hole size to cover write data, preventing empty gap */
 		end_pos = round_up(pos + count, root->sectorsize);
+		michaelpx("pos = %llx, count = %x, end_pos = %llx\n", pos, count, end_pos);
 		err = btrfs_cont_expand(inode, i_size_read(inode), end_pos);
 		if (err) {
 			mutex_unlock(&inode->i_mutex);
@@ -1800,6 +1814,7 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 	if (sync)
 		atomic_inc(&BTRFS_I(inode)->sync_writers);
 
+	michaelpx("file->f_flags = %x\n", file->f_flags);
 	if (file->f_flags & O_DIRECT) {
 		num_written = __btrfs_direct_write(iocb, from, pos);
 	} else {
@@ -1888,6 +1903,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	struct btrfs_log_ctx ctx;
 	int ret = 0;
 	bool full_sync = 0;
+
+	michaelpx("roadmark\n");
 
 	trace_btrfs_sync_file(file, datasync);
 
@@ -2779,10 +2796,21 @@ out:
 	return offset;
 }
 
+/* @@: wrapper used for debuging */
+static ssize_t btrfs_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos) {
+  michaelpx("filp = %x, len = %x, ppos = %llx\n", (unsigned)filp, len, *ppos);
+  return new_sync_read(filp, buf, len, ppos);
+}
+
+static ssize_t btrfs_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos) {
+  michaelpx("filp = %x, len = %x, ppos = %llx\n", (unsigned)filp, len, *ppos);
+  return new_sync_write(filp, buf, len, ppos);
+}
+
 const struct file_operations btrfs_file_operations = {
 	.llseek		= btrfs_file_llseek,
-	.read		= new_sync_read,
-	.write		= new_sync_write,
+	.read		= btrfs_sync_read,
+	.write		= btrfs_sync_write,
 	.read_iter      = generic_file_read_iter,
 	.splice_read	= generic_file_splice_read,
 	.write_iter	= btrfs_file_write_iter,
