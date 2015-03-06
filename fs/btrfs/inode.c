@@ -59,6 +59,7 @@
 #include "backref.h"
 #include "hash.h"
 #include "props.h"
+#include "michael_print.h"
 
 struct btrfs_iget_args {
 	struct btrfs_key *location;
@@ -6485,7 +6486,7 @@ again:
 		extent_end = ALIGN(extent_start + size, root->sectorsize);
 	}
 next:
-	michaelpx("found_type = %x, start = %x,  extent_start = %x, extent_end = %x\n", found_type, start, extent_start, extent_end);
+	michaelpx("found_type = %x, start = %llx,  extent_start = %llx, extent_end = %llx\n", found_type, start, extent_start, extent_end);
 	if (start >= extent_end) {
 		path->slots[0]++;
 		if (path->slots[0] >= btrfs_header_nritems(leaf)) {

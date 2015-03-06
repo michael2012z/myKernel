@@ -20,6 +20,7 @@
 #include "locking.h"
 #include "rcu-string.h"
 #include "backref.h"
+#include "michael_print.h"
 
 static struct kmem_cache *extent_state_cache;
 static struct kmem_cache *extent_buffer_cache;
@@ -3379,7 +3380,7 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 							 page_end, NULL, 1);
 			break;
 		}
-		michaelpx("cur = %x, end = %x, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
+		michaelpx("cur = %llx, end = %llx, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
 		em = epd->get_extent(inode, page, pg_offset, cur,
 				     end - cur + 1, 1);
 		if (IS_ERR_OR_NULL(em)) {
@@ -3460,7 +3461,7 @@ static noinline_for_stack int __extent_writepage_io(struct inode *inode,
 		cur = cur + iosize;
 		pg_offset += iosize;
 		nr++;
-		michaelpx("cur = %x, end = %x, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
+		michaelpx("cur = %llx, end = %llx, pg_offset = %x, nr = %x\n", cur, end, pg_offset, nr);
 	}
 done:
 	*nr_ret = nr;
@@ -3970,7 +3971,7 @@ retry:
 			min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1))) {
 		unsigned i;
 
-		michaelpx("nr_pages = %x, index = %x, end = %x\n", nr_pages, index, end);
+		michaelpx("nr_pages = %x, index = %lx, end = %lx\n", nr_pages, index, end);
 		michael_print_pagevec(&pvec);
 
 		scanned = 1;
@@ -4011,8 +4012,8 @@ retry:
 			}
 
 			if (PageWriteback(page) ||
-				michaelpx("roadmark");
 			    !clear_page_dirty_for_io(page)) {
+				michaelpx("roadmark");
 				unlock_page(page);
 				continue;
 			}

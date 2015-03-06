@@ -2,21 +2,21 @@
 
 void michael_print_address_space(struct address_space *as) {
   michaelpx("");
-  michaelp("  host = %x\n", as->host);
+  michaelp("  host = %x\n", (unsigned)as->host);
   /* TODO: print the radix tree*/
-  michaelp("  nrpages = %x\n", as->nrpages);
-  michaelp("  nrshadows = %x\n", as->nrshadows);
-  michaelp("  writeback_index = %x\n", as->writeback_index);
-  michaelp("  flags = %x\n", as->flags);
-  michaelp("  private_data = %x\n", as->private_data);
+  michaelp("  nrpages = %lx\n", as->nrpages);
+  michaelp("  nrshadows = %lx\n", as->nrshadows);
+  michaelp("  writeback_index = %lx\n", as->writeback_index);
+  michaelp("  flags = %lx\n", as->flags);
+  michaelp("  private_data = %x\n", (unsigned)as->private_data);
 }
 
 void michael_print_writeback_control(struct writeback_control *wbc) {
-  michaelpx("wbc = %x\n", wbc);
-  michaelp("   nr_to_write = %x\n", wbc->nr_to_write);
-  michaelp("   pages_skipped = %x\n", wbc->pages_skipped);
-  michaelp("   range_start = %x\n", wbc->range_start);
-  michaelp("   range_end = %x\n", wbc->range_end);
+  michaelpx("wbc = %x\n", (unsigned)wbc);
+  michaelp("   nr_to_write = %lx\n", wbc->nr_to_write);
+  michaelp("   pages_skipped = %lx\n", wbc->pages_skipped);
+  michaelp("   range_start = %llx\n", wbc->range_start);
+  michaelp("   range_end = %llx\n", wbc->range_end);
   michaelp("   sync_mode = %x\n", wbc->sync_mode);
   michaelp("   for_kupdate = %x\n", wbc->for_kupdate);
   michaelp("   for_background = %x\n", wbc->for_background);
@@ -27,24 +27,24 @@ void michael_print_writeback_control(struct writeback_control *wbc) {
 };
 
 void michael_print_pagevec(struct pagevec *v) {
-  michaelpx("v = %x\n", v);
-  michaelp(" nr  = %x\n", v->nr);
-  michaelp(" cold  = %x\n", v->cold);
+  michaelpx("v = %x\n", (unsigned)v);
+  michaelp(" nr  = %lx\n", v->nr);
+  michaelp(" cold  = %lx\n", v->cold);
 }
 
 void michael_print_extent_map(struct extent_map *em) {
-  michaelpx("em = %x\n", em);
-  michaelp("  start = %x\n", em->start);
-  michaelp("  len = %x\n", em->len);
-  michaelp("  mod_start = %x\n", em->mod_start);
-  michaelp("  mod_len = %x\n", em->mod_len);
-  michaelp("  orig_start = %x\n", em->orig_start);
-  michaelp("  orig_block_len = %x\n", em->orig_block_len);
-  michaelp("  ram_bytes = %x\n", em->ram_bytes);
-  michaelp("  block_start = %x\n", em->block_start);
-  michaelp("  block_len = %x\n", em->block_len);
-  michaelp("  generation = %x\n", em->generation);
-  michaelp("  flags = %x\n", em->flags);
+  michaelpx("em = %x\n", (unsigned)em);
+  michaelp("  start = %llx\n", em->start);
+  michaelp("  len = %llx\n", em->len);
+  michaelp("  mod_start = %llx\n", em->mod_start);
+  michaelp("  mod_len = %llx\n", em->mod_len);
+  michaelp("  orig_start = %llx\n", em->orig_start);
+  michaelp("  orig_block_len = %llx\n", em->orig_block_len);
+  michaelp("  ram_bytes = %llx\n", em->ram_bytes);
+  michaelp("  block_start = %llx\n", em->block_start);
+  michaelp("  block_len = %llx\n", em->block_len);
+  michaelp("  generation = %llx\n", em->generation);
+  michaelp("  flags = %lx\n", em->flags);
   michaelp("  compress_type = %x\n", em->compress_type);
 }
 
