@@ -935,7 +935,9 @@ static int btree_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 	int async = check_async_write(inode, bio_flags);
 	int ret;
 
+	michaelpx("roadmark\n");
 	if (!(rw & REQ_WRITE)) {
+	  michaelpx("roadmark\n");
 		/*
 		 * called for a read, do the setup so that checksum validation
 		 * can happen in the async kernel threads
@@ -947,12 +949,14 @@ static int btree_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 		ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio,
 				    mirror_num, 0);
 	} else if (!async) {
+	  michaelpx("roadmark\n");
 		ret = btree_csum_one_bio(bio);
 		if (ret)
 			goto out_w_error;
 		ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio,
 				    mirror_num, 0);
 	} else {
+	  michaelpx("roadmark\n");
 		/*
 		 * kthread helpers are used to submit writes so that
 		 * checksumming can happen in parallel across all CPUs

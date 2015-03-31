@@ -4940,6 +4940,8 @@ static int __btrfs_map_block(struct btrfs_fs_info *fs_info, int rw,
 	u64 physical_to_patch_in_first_stripe = 0;
 	u64 raid56_full_stripe_start = (u64)-1;
 
+	michaelpx("roadmark\n");
+
 	read_lock(&em_tree->lock);
 	em = lookup_extent_mapping(em_tree, logical, *length);
 	read_unlock(&em_tree->lock);
@@ -5814,6 +5816,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 	int total_devs = 1;
 	struct btrfs_bio *bbio = NULL;
 
+	michaelpx("roadmark\n");
 	length = bio->bi_iter.bi_size;
 	map_length = length;
 
@@ -5854,6 +5857,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 		BUG();
 	}
 
+	michaelpx("dev_nr = %x, total_devs = %x\n", dev_nr, total_devs);
 	while (dev_nr < total_devs) {
 		dev = bbio->stripes[dev_nr].dev;
 		if (!dev || !dev->bdev || (rw & WRITE && !dev->writeable)) {
