@@ -774,6 +774,8 @@ int radeon_dummy_page_init(struct radeon_device *rdev)
 		rdev->dummy_page.page = NULL;
 		return -ENOMEM;
 	}
+	rdev->dummy_page.entry = radeon_gart_get_page_entry(rdev->dummy_page.addr,
+							    RADEON_GART_PAGE_DUMMY);
 	return 0;
 }
 
@@ -1438,6 +1440,11 @@ int radeon_device_init(struct radeon_device *rdev,
 	r = radeon_gem_debugfs_init(rdev);
 	if (r) {
 		DRM_ERROR("registering gem debugfs failed (%d).\n", r);
+	}
+
+	r = radeon_mst_debugfs_init(rdev);
+	if (r) {
+		DRM_ERROR("registering mst debugfs failed (%d).\n", r);
 	}
 
 	if (rdev->flags & RADEON_IS_AGP && !rdev->accel_working) {

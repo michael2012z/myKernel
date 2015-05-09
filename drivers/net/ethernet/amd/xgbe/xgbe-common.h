@@ -365,6 +365,8 @@
 #define MAC_HWF0R_TXCOESEL_WIDTH	1
 #define MAC_HWF0R_VLHASH_INDEX		4
 #define MAC_HWF0R_VLHASH_WIDTH		1
+#define MAC_HWF1R_ADDR64_INDEX		14
+#define MAC_HWF1R_ADDR64_WIDTH		2
 #define MAC_HWF1R_ADVTHWORD_INDEX	13
 #define MAC_HWF1R_ADVTHWORD_WIDTH	1
 #define MAC_HWF1R_DBGMEMA_INDEX		19
@@ -767,16 +769,17 @@
 #define MTL_Q_RQOMR			0x40
 #define MTL_Q_RQMPOCR			0x44
 #define MTL_Q_RQDR			0x4c
+#define MTL_Q_RQFCR			0x50
 #define MTL_Q_IER			0x70
 #define MTL_Q_ISR			0x74
 
 /* MTL queue register entry bit positions and sizes */
+#define MTL_Q_RQFCR_RFA_INDEX		1
+#define MTL_Q_RQFCR_RFA_WIDTH		6
+#define MTL_Q_RQFCR_RFD_INDEX		17
+#define MTL_Q_RQFCR_RFD_WIDTH		6
 #define MTL_Q_RQOMR_EHFC_INDEX		7
 #define MTL_Q_RQOMR_EHFC_WIDTH		1
-#define MTL_Q_RQOMR_RFA_INDEX		8
-#define MTL_Q_RQOMR_RFA_WIDTH		3
-#define MTL_Q_RQOMR_RFD_INDEX		13
-#define MTL_Q_RQOMR_RFD_WIDTH		3
 #define MTL_Q_RQOMR_RQS_INDEX		16
 #define MTL_Q_RQOMR_RQS_WIDTH		9
 #define MTL_Q_RQOMR_RSF_INDEX		5

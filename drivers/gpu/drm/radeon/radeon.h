@@ -111,6 +111,8 @@ extern int radeon_deep_color;
 extern int radeon_use_pflipirq;
 extern int radeon_bapm;
 extern int radeon_backlight;
+extern int radeon_auxch;
+extern int radeon_mst;
 
 /*
  * Copy from radeon_drv.h so we don't have to include both and have conflicting
@@ -242,6 +244,7 @@ bool radeon_get_bios(struct radeon_device *rdev);
  * Dummy page
  */
 struct radeon_dummy_page {
+	uint64_t	entry;
 	struct page	*page;
 	dma_addr_t	addr;
 };
@@ -504,7 +507,7 @@ struct radeon_bo {
 	pid_t				pid;
 
 	struct radeon_mn		*mn;
-	struct interval_tree_node	mn_it;
+	struct list_head		mn_list;
 };
 #define gem_to_radeon_bo(gobj) container_of((gobj), struct radeon_bo, gem_base)
 
@@ -645,7 +648,7 @@ struct radeon_gart {
 	unsigned			num_cpu_pages;
 	unsigned			table_size;
 	struct page			**pages;
-	dma_addr_t			*pages_addr;
+	uint64_t			*pages_entry;
 	bool				ready;
 };
 
@@ -1564,6 +1567,7 @@ struct radeon_dpm {
 	int			new_active_crtc_count;
 	u32			current_active_crtcs;
 	int			current_active_crtc_count;
+	bool single_display;
 	struct radeon_dpm_dynamic_state dyn_state;
 	struct radeon_dpm_fan fan;
 	u32 tdp_limit;
@@ -1757,6 +1761,9 @@ struct r600_audio {
 	bool enabled;
 	struct r600_audio_pin pin[RADEON_MAX_AFMT_BLOCKS];
 	int num_pins;
+	struct radeon_audio_funcs *hdmi_funcs;
+	struct radeon_audio_funcs *dp_funcs;
+	struct radeon_audio_basic_funcs *funcs;
 };
 
 /*
@@ -1777,8 +1784,16 @@ void radeon_test_syncing(struct radeon_device *rdev);
 /*
  * MMU Notifier
  */
+#if defined(CONFIG_MMU_NOTIFIER)
 int radeon_mn_register(struct radeon_bo *bo, unsigned long addr);
 void radeon_mn_unregister(struct radeon_bo *bo);
+#else
+static inline int radeon_mn_register(struct radeon_bo *bo, unsigned long addr)
+{
+	return -ENODEV;
+}
+static inline void radeon_mn_unregister(struct radeon_bo *bo) {}
+#endif
 
 /*
  * Debugfs
@@ -1844,11 +1859,14 @@ struct radeon_asic {
 	u32 (*get_xclk)(struct radeon_device *rdev);
 	/* get the gpu clock counter */
 	uint64_t (*get_gpu_clock_counter)(struct radeon_device *rdev);
+	/* get register for info ioctl */
+	int (*get_allowed_info_register)(struct radeon_device *rdev, u32 reg, u32 *val);
 	/* gart */
 	struct {
 		void (*tlb_flush)(struct radeon_device *rdev);
+		uint64_t (*get_page_entry)(uint64_t addr, uint32_t flags);
 		void (*set_page)(struct radeon_device *rdev, unsigned i,
-				 uint64_t addr, uint32_t flags);
+				 uint64_t entry);
 	} gart;
 	struct {
 		int (*init)(struct radeon_device *rdev);
@@ -1967,6 +1985,12 @@ struct radeon_asic {
 		bool (*vblank_too_short)(struct radeon_device *rdev);
 		void (*powergate_uvd)(struct radeon_device *rdev, bool gate);
 		void (*enable_bapm)(struct radeon_device *rdev, bool enable);
+		void (*fan_ctrl_set_mode)(struct radeon_device *rdev, u32 mode);
+		u32 (*fan_ctrl_get_mode)(struct radeon_device *rdev);
+		int (*set_fan_speed_percent)(struct radeon_device *rdev, u32 speed);
+		int (*get_fan_speed_percent)(struct radeon_device *rdev, u32 *speed);
+		u32 (*get_current_sclk)(struct radeon_device *rdev);
+		u32 (*get_current_mclk)(struct radeon_device *rdev);
 	} dpm;
 	/* pageflipping */
 	struct {
@@ -2390,6 +2414,7 @@ struct radeon_device {
 	struct radeon_rlc rlc;
 	struct radeon_mec mec;
 	struct work_struct hotplug_work;
+	struct work_struct dp_work;
 	struct work_struct audio_work;
 	int num_crtc; /* number of crtcs */
 	struct mutex dc_hw_i2c_mutex; /* display controller hw i2c mutex */
@@ -2852,7 +2877,8 @@ static inline void radeon_ring_write(struct radeon_ring *ring, uint32_t v)
 #define radeon_vga_set_state(rdev, state) (rdev)->asic->vga_set_state((rdev), (state))
 #define radeon_asic_reset(rdev) (rdev)->asic->asic_reset((rdev))
 #define radeon_gart_tlb_flush(rdev) (rdev)->asic->gart.tlb_flush((rdev))
-#define radeon_gart_set_page(rdev, i, p, f) (rdev)->asic->gart.set_page((rdev), (i), (p), (f))
+#define radeon_gart_get_page_entry(a, f) (rdev)->asic->gart.get_page_entry((a), (f))
+#define radeon_gart_set_page(rdev, i, e) (rdev)->asic->gart.set_page((rdev), (i), (e))
 #define radeon_asic_vm_init(rdev) (rdev)->asic->vm.init((rdev))
 #define radeon_asic_vm_fini(rdev) (rdev)->asic->vm.fini((rdev))
 #define radeon_asic_vm_copy_pages(rdev, ib, pe, src, count) ((rdev)->asic->vm.copy_pages((rdev), (ib), (pe), (src), (count)))
@@ -2913,6 +2939,7 @@ static inline void radeon_ring_write(struct radeon_ring *ring, uint32_t v)
 #define radeon_mc_wait_for_idle(rdev) (rdev)->asic->mc_wait_for_idle((rdev))
 #define radeon_get_xclk(rdev) (rdev)->asic->get_xclk((rdev))
 #define radeon_get_gpu_clock_counter(rdev) (rdev)->asic->get_gpu_clock_counter((rdev))
+#define radeon_get_allowed_info_register(rdev, r, v) (rdev)->asic->get_allowed_info_register((rdev), (r), (v))
 #define radeon_dpm_init(rdev) rdev->asic->dpm.init((rdev))
 #define radeon_dpm_setup_asic(rdev) rdev->asic->dpm.setup_asic((rdev))
 #define radeon_dpm_enable(rdev) rdev->asic->dpm.enable((rdev))
@@ -2931,6 +2958,8 @@ static inline void radeon_ring_write(struct radeon_ring *ring, uint32_t v)
 #define radeon_dpm_vblank_too_short(rdev) rdev->asic->dpm.vblank_too_short((rdev))
 #define radeon_dpm_powergate_uvd(rdev, g) rdev->asic->dpm.powergate_uvd((rdev), (g))
 #define radeon_dpm_enable_bapm(rdev, e) rdev->asic->dpm.enable_bapm((rdev), (e))
+#define radeon_dpm_get_current_sclk(rdev) rdev->asic->dpm.get_current_sclk((rdev))
+#define radeon_dpm_get_current_mclk(rdev) rdev->asic->dpm.get_current_mclk((rdev))
 
 /* Common functions */
 /* AGP */

@@ -901,6 +901,15 @@ find_root:
 	if (IS_ERR(new_root))
 		return ERR_CAST(new_root);
 
+	if (!(sb->s_flags & MS_RDONLY)) {
+		int ret;
+		down_read(&fs_info->cleanup_work_sem);
+		ret = btrfs_orphan_cleanup(new_root);
+		up_read(&fs_info->cleanup_work_sem);
+		if (ret)
+			return ERR_PTR(ret);
+	}
+
 	dir_id = btrfs_root_dirid(&new_root->root_item);
 setup_root:
 	location.objectid = dir_id;
@@ -916,7 +925,7 @@ setup_root:
 	 * a reference to the dentry.  We will have already gotten a reference
 	 * to the inode in btrfs_fill_super so we're good to go.
 	 */
-	if (!new && sb->s_root->d_inode == inode) {
+	if (!new && d_inode(sb->s_root) == inode) {
 		iput(inode);
 		return dget(sb->s_root);
 	}
@@ -1000,10 +1009,20 @@ int btrfs_sync_fs(struct super_block *sb, int wait)
 			 */
 			if (fs_info->pending_changes == 0)
 				return 0;
+			/*
+			 * A non-blocking test if the fs is frozen. We must not
+			 * start a new transaction here otherwise a deadlock
+			 * happens. The pending operations are delayed to the
+			 * next commit after thawing.
+			 */
+			if (__sb_start_write(sb, SB_FREEZE_WRITE, false))
+				__sb_end_write(sb, SB_FREEZE_WRITE);
+			else
+				return 0;
 			trans = btrfs_start_transaction(root, 0);
-		} else {
-			return PTR_ERR(trans);
 		}
+		if (IS_ERR(trans))
+			return PTR_ERR(trans);
 	}
 	return btrfs_commit_transaction(trans, root);
 }
@@ -1211,7 +1230,7 @@ static struct dentry *mount_subvol(const char *subvol_name, int flags,
 
 	root = mount_subtree(mnt, subvol_name);
 
-	if (!IS_ERR(root) && !is_subvolume_inode(root->d_inode)) {
+	if (!IS_ERR(root) && !is_subvolume_inode(d_inode(root))) {
 		struct super_block *s = root->d_sb;
 		dput(root);
 		root = ERR_PTR(-EINVAL);
@@ -1704,7 +1723,7 @@ static int btrfs_calc_avail_data_space(struct btrfs_root *root, u64 *free_bytes)
 		avail_space = device->total_bytes - device->bytes_used;
 
 		/* align with stripe_len */
-		do_div(avail_space, BTRFS_STRIPE_LEN);
+		avail_space = div_u64(avail_space, BTRFS_STRIPE_LEN);
 		avail_space *= BTRFS_STRIPE_LEN;
 
 		/*
@@ -1876,8 +1895,8 @@ static int btrfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_fsid.val[0] = be32_to_cpu(fsid[0]) ^ be32_to_cpu(fsid[2]);
 	buf->f_fsid.val[1] = be32_to_cpu(fsid[1]) ^ be32_to_cpu(fsid[3]);
 	/* Mask in the root object ID too, to disambiguate subvols */
-	buf->f_fsid.val[0] ^= BTRFS_I(dentry->d_inode)->root->objectid >> 32;
-	buf->f_fsid.val[1] ^= BTRFS_I(dentry->d_inode)->root->objectid;
+	buf->f_fsid.val[0] ^= BTRFS_I(d_inode(dentry))->root->objectid >> 32;
+	buf->f_fsid.val[1] ^= BTRFS_I(d_inode(dentry))->root->objectid;
 
 	return 0;
 }
@@ -1897,6 +1916,17 @@ static struct file_system_type btrfs_fs_type = {
 	.fs_flags	= FS_REQUIRES_DEV | FS_BINARY_MOUNTDATA,
 };
 MODULE_ALIAS_FS("btrfs");
+
+static int btrfs_control_open(struct inode *inode, struct file *file)
+{
+	/*
+	 * The control file's private_data is used to hold the
+	 * transaction when it is started and is used to keep
+	 * track of whether a transaction is already in progress.
+	 */
+	file->private_data = NULL;
+	return 0;
+}
 
 /*
  * used by btrfsctl to scan devices when no FS is mounted
@@ -1948,11 +1978,6 @@ static int btrfs_freeze(struct super_block *sb)
 	return btrfs_commit_transaction(trans, root);
 }
 
-static int btrfs_unfreeze(struct super_block *sb)
-{
-	return 0;
-}
-
 static int btrfs_show_devname(struct seq_file *m, struct dentry *root)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(root->d_sb);
@@ -2001,10 +2026,10 @@ static const struct super_operations btrfs_super_ops = {
 	.statfs		= btrfs_statfs,
 	.remount_fs	= btrfs_remount,
 	.freeze_fs	= btrfs_freeze,
-	.unfreeze_fs	= btrfs_unfreeze,
 };
 
 static const struct file_operations btrfs_ctl_fops = {
+	.open = btrfs_control_open,
 	.unlocked_ioctl	 = btrfs_control_ioctl,
 	.compat_ioctl = btrfs_control_ioctl,
 	.owner	 = THIS_MODULE,
