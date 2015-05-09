@@ -138,6 +138,8 @@ int printk_emit(int facility, int level,
 
 asmlinkage __printf(1, 2) __cold
 int printk(const char *fmt, ...);
+#define michaelp(fmt, args...) printk(KERN_MICH fmt, ##args)
+#define michaelpx(fmt, args...) printk(KERN_MICH "%s: %d: " fmt, __func__, __LINE__, ##args)
 
 /*
  * Special printk facility for scheduler/timekeeping use only, _DO_NOT_USE_ !
@@ -178,6 +180,8 @@ int printk(const char *s, ...)
 {
 	return 0;
 }
+#define michaelp printk
+#define michaelpx printk
 static inline __printf(1, 2) __cold
 int printk_deferred(const char *s, ...)
 {
