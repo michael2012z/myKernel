@@ -39,8 +39,8 @@
 #include <asm/irq.h>
 #include <asm/idle.h>
 #include <asm/io_apic.h>
-#include <asm/xen/page.h>
 #include <asm/xen/pci.h>
+#include <xen/page.h>
 #endif
 #include <asm/sync_bitops.h>
 #include <asm/xen/hypercall.h>
@@ -452,9 +452,11 @@ static void xen_free_irq(unsigned irq)
 	irq_free_desc(irq);
 }
 
-static void xen_evtchn_close(unsigned int port)
+static void xen_evtchn_close(unsigned int port, unsigned int cpu)
 {
 	struct evtchn_close close;
+
+	xen_evtchn_op_close(port, cpu);
 
 	close.port = port;
 	if (HYPERVISOR_event_channel_op(EVTCHNOP_close, &close) != 0)
@@ -544,7 +546,7 @@ out:
 
 err:
 	pr_err("irq%d: Failed to set port to irq mapping (%d)\n", irq, rc);
-	xen_evtchn_close(evtchn);
+	xen_evtchn_close(evtchn, NR_CPUS);
 	return 0;
 }
 
@@ -565,7 +567,7 @@ static void shutdown_pirq(struct irq_data *data)
 		return;
 
 	mask_evtchn(evtchn);
-	xen_evtchn_close(evtchn);
+	xen_evtchn_close(evtchn, cpu_from_evtchn(evtchn));
 	xen_irq_info_cleanup(info);
 }
 
@@ -609,7 +611,7 @@ static void __unbind_from_irq(unsigned int irq)
 	if (VALID_EVTCHN(evtchn)) {
 		unsigned int cpu = cpu_from_irq(irq);
 
-		xen_evtchn_close(evtchn);
+		xen_evtchn_close(evtchn, cpu);
 
 		switch (type_from_irq(irq)) {
 		case IRQT_VIRQ:
@@ -957,7 +959,7 @@ unsigned xen_evtchn_nr_channels(void)
 }
 EXPORT_SYMBOL_GPL(xen_evtchn_nr_channels);
 
-int bind_virq_to_irq(unsigned int virq, unsigned int cpu)
+int bind_virq_to_irq(unsigned int virq, unsigned int cpu, bool percpu)
 {
 	struct evtchn_bind_virq bind_virq;
 	int evtchn, irq, ret;
@@ -971,8 +973,12 @@ int bind_virq_to_irq(unsigned int virq, unsigned int cpu)
 		if (irq < 0)
 			goto out;
 
-		irq_set_chip_and_handler_name(irq, &xen_percpu_chip,
-					      handle_percpu_irq, "virq");
+		if (percpu)
+			irq_set_chip_and_handler_name(irq, &xen_percpu_chip,
+						      handle_percpu_irq, "virq");
+		else
+			irq_set_chip_and_handler_name(irq, &xen_dynamic_chip,
+						      handle_edge_irq, "virq");
 
 		bind_virq.virq = virq;
 		bind_virq.vcpu = cpu;
@@ -1062,7 +1068,7 @@ int bind_virq_to_irqhandler(unsigned int virq, unsigned int cpu,
 {
 	int irq, retval;
 
-	irq = bind_virq_to_irq(virq, cpu);
+	irq = bind_virq_to_irq(virq, cpu, irqflags & IRQF_PERCPU);
 	if (irq < 0)
 		return irq;
 	retval = request_irq(irq, handler, irqflags, devname, dev_id);
