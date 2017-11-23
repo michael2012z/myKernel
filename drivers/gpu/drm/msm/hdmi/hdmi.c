@@ -19,6 +19,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_gpio.h>
 
+#include <sound/hdmi-codec.h>
 #include "hdmi.h"
 
 void msm_hdmi_set_mode(struct hdmi *hdmi, bool power_on)
@@ -207,7 +208,7 @@ static struct hdmi *msm_hdmi_init(struct platform_device *pdev)
 	for (i = 0; i < config->hpd_clk_cnt; i++) {
 		struct clk *clk;
 
-		clk = devm_clk_get(&pdev->dev, config->hpd_clk_names[i]);
+		clk = msm_clk_get(pdev, config->hpd_clk_names[i]);
 		if (IS_ERR(clk)) {
 			ret = PTR_ERR(clk);
 			dev_err(&pdev->dev, "failed to get hpd clk: %s (%d)\n",
@@ -227,7 +228,7 @@ static struct hdmi *msm_hdmi_init(struct platform_device *pdev)
 	for (i = 0; i < config->pwr_clk_cnt; i++) {
 		struct clk *clk;
 
-		clk = devm_clk_get(&pdev->dev, config->pwr_clk_names[i]);
+		clk = msm_clk_get(pdev, config->pwr_clk_names[i]);
 		if (IS_ERR(clk)) {
 			ret = PTR_ERR(clk);
 			dev_err(&pdev->dev, "failed to get pwr clk: %s (%d)\n",
@@ -237,6 +238,8 @@ static struct hdmi *msm_hdmi_init(struct platform_device *pdev)
 
 		hdmi->pwr_clks[i] = clk;
 	}
+
+	pm_runtime_enable(&pdev->dev);
 
 	hdmi->workq = alloc_ordered_workqueue("msm_hdmi", 0);
 
@@ -358,7 +361,7 @@ static const char *hpd_reg_names_none[] = {};
 static struct hdmi_platform_config hdmi_tx_8660_config;
 
 static const char *hpd_reg_names_8960[] = {"core-vdda", "hdmi-mux"};
-static const char *hpd_clk_names_8960[] = {"core_clk", "master_iface_clk", "slave_iface_clk"};
+static const char *hpd_clk_names_8960[] = {"core", "master_iface", "slave_iface"};
 
 static struct hdmi_platform_config hdmi_tx_8960_config = {
 		HDMI_CFG(hpd_reg, 8960),
@@ -367,8 +370,8 @@ static struct hdmi_platform_config hdmi_tx_8960_config = {
 
 static const char *pwr_reg_names_8x74[] = {"core-vdda", "core-vcc"};
 static const char *hpd_reg_names_8x74[] = {"hpd-gdsc", "hpd-5v"};
-static const char *pwr_clk_names_8x74[] = {"extp_clk", "alt_iface_clk"};
-static const char *hpd_clk_names_8x74[] = {"iface_clk", "core_clk", "mdp_core_clk"};
+static const char *pwr_clk_names_8x74[] = {"extp", "alt_iface"};
+static const char *hpd_clk_names_8x74[] = {"iface", "core", "mdp_core"};
 static unsigned long hpd_clk_freq_8x74[] = {0, 19200000, 0};
 
 static struct hdmi_platform_config hdmi_tx_8974_config = {
@@ -421,17 +424,139 @@ static const struct {
 
 static int msm_hdmi_get_gpio(struct device_node *of_node, const char *name)
 {
-	int gpio = of_get_named_gpio(of_node, name, 0);
+	int gpio;
+
+	/* try with the gpio names as in the table (downstream bindings) */
+	gpio = of_get_named_gpio(of_node, name, 0);
 	if (gpio < 0) {
 		char name2[32];
-		snprintf(name2, sizeof(name2), "%s-gpio", name);
+
+		/* try with the gpio names as in the upstream bindings */
+		snprintf(name2, sizeof(name2), "%s-gpios", name);
 		gpio = of_get_named_gpio(of_node, name2, 0);
+		if (gpio < 0) {
+			char name3[32];
+
+			/*
+			 * try again after stripping out the "qcom,hdmi-tx"
+			 * prefix. This is mainly to match "hpd-gpios" used
+			 * in the upstream bindings
+			 */
+			if (sscanf(name2, "qcom,hdmi-tx-%s", name3))
+				gpio = of_get_named_gpio(of_node, name3, 0);
+		}
+
 		if (gpio < 0) {
 			DBG("failed to get gpio: %s (%d)", name, gpio);
 			gpio = -1;
 		}
 	}
 	return gpio;
+}
+
+/*
+ * HDMI audio codec callbacks
+ */
+static int msm_hdmi_audio_hw_params(struct device *dev, void *data,
+				    struct hdmi_codec_daifmt *daifmt,
+				    struct hdmi_codec_params *params)
+{
+	struct hdmi *hdmi = dev_get_drvdata(dev);
+	unsigned int chan;
+	unsigned int channel_allocation = 0;
+	unsigned int rate;
+	unsigned int level_shift  = 0; /* 0dB */
+	bool down_mix = false;
+
+	dev_dbg(dev, "%u Hz, %d bit, %d channels\n", params->sample_rate,
+		 params->sample_width, params->cea.channels);
+
+	switch (params->cea.channels) {
+	case 2:
+		/* FR and FL speakers */
+		channel_allocation  = 0;
+		chan = MSM_HDMI_AUDIO_CHANNEL_2;
+		break;
+	case 4:
+		/* FC, LFE, FR and FL speakers */
+		channel_allocation  = 0x3;
+		chan = MSM_HDMI_AUDIO_CHANNEL_4;
+		break;
+	case 6:
+		/* RR, RL, FC, LFE, FR and FL speakers */
+		channel_allocation  = 0x0B;
+		chan = MSM_HDMI_AUDIO_CHANNEL_6;
+		break;
+	case 8:
+		/* FRC, FLC, RR, RL, FC, LFE, FR and FL speakers */
+		channel_allocation  = 0x1F;
+		chan = MSM_HDMI_AUDIO_CHANNEL_8;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	switch (params->sample_rate) {
+	case 32000:
+		rate = HDMI_SAMPLE_RATE_32KHZ;
+		break;
+	case 44100:
+		rate = HDMI_SAMPLE_RATE_44_1KHZ;
+		break;
+	case 48000:
+		rate = HDMI_SAMPLE_RATE_48KHZ;
+		break;
+	case 88200:
+		rate = HDMI_SAMPLE_RATE_88_2KHZ;
+		break;
+	case 96000:
+		rate = HDMI_SAMPLE_RATE_96KHZ;
+		break;
+	case 176400:
+		rate = HDMI_SAMPLE_RATE_176_4KHZ;
+		break;
+	case 192000:
+		rate = HDMI_SAMPLE_RATE_192KHZ;
+		break;
+	default:
+		dev_err(dev, "rate[%d] not supported!\n",
+			params->sample_rate);
+		return -EINVAL;
+	}
+
+	msm_hdmi_audio_set_sample_rate(hdmi, rate);
+	msm_hdmi_audio_info_setup(hdmi, 1, chan, channel_allocation,
+			      level_shift, down_mix);
+
+	return 0;
+}
+
+static void msm_hdmi_audio_shutdown(struct device *dev, void *data)
+{
+	struct hdmi *hdmi = dev_get_drvdata(dev);
+
+	msm_hdmi_audio_info_setup(hdmi, 0, 0, 0, 0, 0);
+}
+
+static const struct hdmi_codec_ops msm_hdmi_audio_codec_ops = {
+	.hw_params = msm_hdmi_audio_hw_params,
+	.audio_shutdown = msm_hdmi_audio_shutdown,
+};
+
+static struct hdmi_codec_pdata codec_data = {
+	.ops = &msm_hdmi_audio_codec_ops,
+	.max_i2s_channels = 8,
+	.i2s = 1,
+};
+
+static int msm_hdmi_register_audio_driver(struct hdmi *hdmi, struct device *dev)
+{
+	hdmi->audio_pdev = platform_device_register_data(dev,
+							 HDMI_CODEC_DRV_NAME,
+							 PLATFORM_DEVID_AUTO,
+							 &codec_data,
+							 sizeof(codec_data));
+	return PTR_ERR_OR_ZERO(hdmi->audio_pdev);
 }
 
 static int msm_hdmi_bind(struct device *dev, struct device *master, void *data)
@@ -441,7 +566,7 @@ static int msm_hdmi_bind(struct device *dev, struct device *master, void *data)
 	static struct hdmi_platform_config *hdmi_cfg;
 	struct hdmi *hdmi;
 	struct device_node *of_node = dev->of_node;
-	int i;
+	int i, err;
 
 	hdmi_cfg = (struct hdmi_platform_config *)
 			of_device_get_match_data(dev);
@@ -468,6 +593,12 @@ static int msm_hdmi_bind(struct device *dev, struct device *master, void *data)
 		return PTR_ERR(hdmi);
 	priv->hdmi = hdmi;
 
+	err = msm_hdmi_register_audio_driver(hdmi, dev);
+	if (err) {
+		DRM_ERROR("Failed to attach an audio codec %d\n", err);
+		hdmi->audio_pdev = NULL;
+	}
+
 	return 0;
 }
 
@@ -477,6 +608,9 @@ static void msm_hdmi_unbind(struct device *dev, struct device *master,
 	struct drm_device *drm = dev_get_drvdata(master);
 	struct msm_drm_private *priv = drm->dev_private;
 	if (priv->hdmi) {
+		if (priv->hdmi->audio_pdev)
+			platform_device_unregister(priv->hdmi->audio_pdev);
+
 		msm_hdmi_destroy(priv->hdmi);
 		priv->hdmi = NULL;
 	}

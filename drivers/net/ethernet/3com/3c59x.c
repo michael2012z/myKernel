@@ -92,7 +92,7 @@ static int vortex_debug = 1;
 #include <linux/gfp.h>
 #include <asm/irq.h>			/* For nr_irqs only. */
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* Kernel compatibility defines, some common to David Hinds' PCMCIA package.
    This is only in the support-all-kernels source code. */
@@ -759,8 +759,8 @@ static int vortex_open(struct net_device *dev);
 static void mdio_sync(struct vortex_private *vp, int bits);
 static int mdio_read(struct net_device *dev, int phy_id, int location);
 static void mdio_write(struct net_device *vp, int phy_id, int location, int value);
-static void vortex_timer(unsigned long arg);
-static void rx_oom_timer(unsigned long arg);
+static void vortex_timer(struct timer_list *t);
+static void rx_oom_timer(struct timer_list *t);
 static netdev_tx_t vortex_start_xmit(struct sk_buff *skb,
 				     struct net_device *dev);
 static netdev_tx_t boomerang_start_xmit(struct sk_buff *skb,
@@ -813,8 +813,8 @@ module_param(global_enable_wol, int, 0);
 module_param_array(enable_wol, int, NULL, 0);
 module_param(rx_copybreak, int, 0);
 module_param(max_interrupt_work, int, 0);
-module_param(compaq_ioaddr, int, 0);
-module_param(compaq_irq, int, 0);
+module_param_hw(compaq_ioaddr, int, ioport, 0);
+module_param_hw(compaq_irq, int, irq, 0);
 module_param(compaq_device_id, int, 0);
 module_param(watchdog, int, 0);
 module_param(global_use_mmio, int, 0);
@@ -900,7 +900,7 @@ static const struct dev_pm_ops vortex_pm_ops = {
 #endif /* !CONFIG_PM */
 
 #ifdef CONFIG_EISA
-static struct eisa_device_id vortex_eisa_ids[] = {
+static const struct eisa_device_id vortex_eisa_ids[] = {
 	{ "TCM5920", CH_3C592 },
 	{ "TCM5970", CH_3C597 },
 	{ "" }
@@ -1062,7 +1062,6 @@ static const struct net_device_ops boomrang_netdev_ops = {
 	.ndo_do_ioctl 		= vortex_ioctl,
 #endif
 	.ndo_set_rx_mode	= set_rx_mode,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -1080,7 +1079,6 @@ static const struct net_device_ops vortex_netdev_ops = {
 	.ndo_do_ioctl 		= vortex_ioctl,
 #endif
 	.ndo_set_rx_mode	= set_rx_mode,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -1601,9 +1599,9 @@ vortex_up(struct net_device *dev)
 				dev->name, media_tbl[dev->if_port].name);
 	}
 
-	setup_timer(&vp->timer, vortex_timer, (unsigned long)dev);
+	timer_setup(&vp->timer, vortex_timer, 0);
 	mod_timer(&vp->timer, RUN_AT(media_tbl[dev->if_port].wait));
-	setup_timer(&vp->rx_oom_timer, rx_oom_timer, (unsigned long)dev);
+	timer_setup(&vp->rx_oom_timer, rx_oom_timer, 0);
 
 	if (vortex_debug > 1)
 		pr_debug("%s: Initial media type %s.\n",
@@ -1786,10 +1784,10 @@ out:
 }
 
 static void
-vortex_timer(unsigned long data)
+vortex_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct vortex_private *vp = netdev_priv(dev);
+	struct vortex_private *vp = from_timer(vp, t, timer);
+	struct net_device *dev = vp->mii.dev;
 	void __iomem *ioaddr = vp->ioaddr;
 	int next_tick = 60*HZ;
 	int ok = 0;
@@ -1944,7 +1942,7 @@ static void vortex_tx_timeout(struct net_device *dev)
 	}
 	/* Issue Tx Enable */
 	iowrite16(TxEnable, ioaddr + EL3_CMD);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 }
 
 /*
@@ -2630,9 +2628,8 @@ boomerang_rx(struct net_device *dev)
 				skb_reserve(skb, 2);	/* Align IP on 16 byte boundaries */
 				pci_dma_sync_single_for_cpu(VORTEX_PCI(vp), dma, PKT_BUF_SZ, PCI_DMA_FROMDEVICE);
 				/* 'skb_put()' points to the start of sk_buff data area. */
-				memcpy(skb_put(skb, pkt_len),
-					   vp->rx_skbuff[entry]->data,
-					   pkt_len);
+				skb_put_data(skb, vp->rx_skbuff[entry]->data,
+					     pkt_len);
 				pci_dma_sync_single_for_device(VORTEX_PCI(vp), dma, PKT_BUF_SZ, PCI_DMA_FROMDEVICE);
 				vp->rx_copy++;
 			} else {
@@ -2690,10 +2687,10 @@ boomerang_rx(struct net_device *dev)
  * for some memory.  Otherwise there is no way to restart the rx process.
  */
 static void
-rx_oom_timer(unsigned long arg)
+rx_oom_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)arg;
-	struct vortex_private *vp = netdev_priv(dev);
+	struct vortex_private *vp = from_timer(vp, t, rx_oom_timer);
+	struct net_device *dev = vp->mii.dev;
 
 	spin_lock_irq(&vp->lock);
 	if ((vp->cur_rx - vp->dirty_rx) == RX_RING_SIZE)	/* This test is redundant, but makes me feel good */
@@ -2909,18 +2906,22 @@ static int vortex_nway_reset(struct net_device *dev)
 	return mii_nway_restart(&vp->mii);
 }
 
-static int vortex_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int vortex_get_link_ksettings(struct net_device *dev,
+				     struct ethtool_link_ksettings *cmd)
 {
 	struct vortex_private *vp = netdev_priv(dev);
 
-	return mii_ethtool_gset(&vp->mii, cmd);
+	mii_ethtool_get_link_ksettings(&vp->mii, cmd);
+
+	return 0;
 }
 
-static int vortex_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int vortex_set_link_ksettings(struct net_device *dev,
+				     const struct ethtool_link_ksettings *cmd)
 {
 	struct vortex_private *vp = netdev_priv(dev);
 
-	return mii_ethtool_sset(&vp->mii, cmd);
+	return mii_ethtool_set_link_ksettings(&vp->mii, cmd);
 }
 
 static u32 vortex_get_msglevel(struct net_device *dev)
@@ -3033,13 +3034,13 @@ static const struct ethtool_ops vortex_ethtool_ops = {
 	.set_msglevel           = vortex_set_msglevel,
 	.get_ethtool_stats      = vortex_get_ethtool_stats,
 	.get_sset_count		= vortex_get_sset_count,
-	.get_settings           = vortex_get_settings,
-	.set_settings           = vortex_set_settings,
 	.get_link               = ethtool_op_get_link,
 	.nway_reset             = vortex_nway_reset,
 	.get_wol                = vortex_get_wol,
 	.set_wol                = vortex_set_wol,
 	.get_ts_info		= ethtool_op_get_ts_info,
+	.get_link_ksettings     = vortex_get_link_ksettings,
+	.set_link_ksettings     = vortex_set_link_ksettings,
 };
 
 #ifdef CONFIG_PCI
@@ -3089,7 +3090,7 @@ static void set_rx_mode(struct net_device *dev)
 	iowrite16(new_mode, ioaddr + EL3_CMD);
 }
 
-#if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 /* Setup the card so that it can receive frames with an 802.1q VLAN tag.
    Note that this must be done after each RxReset due to some backwards
    compatibility logic in the Cyclone and Tornado ASICs */

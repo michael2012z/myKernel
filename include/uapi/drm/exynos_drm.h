@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /* exynos_drm.h
  *
  * Copyright (c) 2011 Samsung Electronics Co., Ltd.
@@ -16,6 +17,10 @@
 #define _UAPI_EXYNOS_DRM_H_
 
 #include "drm.h"
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
 
 /**
  * User-desired buffer creation information structure.
@@ -361,5 +366,9 @@ struct drm_exynos_ipp_event {
 	__u32			reserved;
 	__u32			buf_id[EXYNOS_DRM_OPS_MAX];
 };
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif /* _UAPI_EXYNOS_DRM_H_ */

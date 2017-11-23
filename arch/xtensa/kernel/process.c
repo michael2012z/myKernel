@@ -17,6 +17,9 @@
 
 #include <linux/errno.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -35,7 +38,7 @@
 #include <linux/rcupdate.h>
 
 #include <asm/pgtable.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/platform.h>
@@ -115,10 +118,10 @@ void arch_cpu_idle(void)
 /*
  * This is called when the thread calls exit().
  */
-void exit_thread(void)
+void exit_thread(struct task_struct *tsk)
 {
 #if XTENSA_HAVE_COPROCESSORS
-	coprocessor_release_all(current_thread_info());
+	coprocessor_release_all(task_thread_info(tsk));
 #endif
 }
 
@@ -201,8 +204,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
 #endif
 
 	/* Create a call4 dummy-frame: a0 = 0, a1 = childregs. */
-	*((int*)childregs - 3) = (unsigned long)childregs;
-	*((int*)childregs - 4) = 0;
+	SPILL_SLOT(childregs, 1) = (unsigned long)childregs;
+	SPILL_SLOT(childregs, 0) = 0;
 
 	p->thread.sp = (unsigned long)childregs;
 
@@ -263,8 +266,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
 		/* pass parameters to ret_from_kernel_thread:
 		 * a2 = thread_fn, a3 = thread_fn arg
 		 */
-		*((int *)childregs - 1) = thread_fn_arg;
-		*((int *)childregs - 2) = usp_thread_fn;
+		SPILL_SLOT(childregs, 3) = thread_fn_arg;
+		SPILL_SLOT(childregs, 2) = usp_thread_fn;
 
 		/* Childregs are only used when we're going to userspace
 		 * in which case start_thread will set them up.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <net/ip.h>
 #include <net/udp.h>
 #include <net/udplite.h>
@@ -78,9 +79,12 @@ int udp6_csum_init(struct sk_buff *skb, struct udphdr *uh, int proto)
 	 * we accept a checksum of zero here. When we find the socket
 	 * for the UDP packet we'll check if that socket allows zero checksum
 	 * for IPv6 (set by socket option).
+	 *
+	 * Note, we are only interested in != 0 or == 0, thus the
+	 * force to int.
 	 */
-	return skb_checksum_init_zero_check(skb, proto, uh->check,
-					   ip6_compute_pseudo);
+	return (__force int)skb_checksum_init_zero_check(skb, proto, uh->check,
+							 ip6_compute_pseudo);
 }
 EXPORT_SYMBOL(udp6_csum_init);
 

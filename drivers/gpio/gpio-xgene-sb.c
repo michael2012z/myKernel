@@ -130,18 +130,16 @@ static int xgene_gpio_sb_to_irq(struct gpio_chip *gc, u32 gpio)
 			(gpio > HWIRQ_TO_GPIO(priv, priv->nirq)))
 		return -ENXIO;
 
-	if (gc->parent->of_node)
-		fwspec.fwnode = of_node_to_fwnode(gc->parent->of_node);
-	else
-		fwspec.fwnode = gc->parent->fwnode;
+	fwspec.fwnode = gc->parent->fwnode;
 	fwspec.param_count = 2;
 	fwspec.param[0] = GPIO_TO_HWIRQ(priv, gpio);
 	fwspec.param[1] = IRQ_TYPE_NONE;
 	return irq_create_fwspec_mapping(&fwspec);
 }
 
-static void xgene_gpio_sb_domain_activate(struct irq_domain *d,
-		struct irq_data *irq_data)
+static int xgene_gpio_sb_domain_activate(struct irq_domain *d,
+					 struct irq_data *irq_data,
+					 bool early)
 {
 	struct xgene_gpio_sb *priv = d->host_data;
 	u32 gpio = HWIRQ_TO_GPIO(priv, irq_data->hwirq);
@@ -150,11 +148,12 @@ static void xgene_gpio_sb_domain_activate(struct irq_domain *d,
 		dev_err(priv->gc.parent,
 		"Unable to configure XGene GPIO standby pin %d as IRQ\n",
 				gpio);
-		return;
+		return -ENOSPC;
 	}
 
 	xgene_gpio_set_bit(&priv->gc, priv->regs + MPA_GPIO_SEL_LO,
 			gpio * 2, 1);
+	return 0;
 }
 
 static void xgene_gpio_sb_domain_deactivate(struct irq_domain *d,
@@ -216,23 +215,10 @@ static int xgene_gpio_sb_domain_alloc(struct irq_domain *domain,
 			&parent_fwspec);
 }
 
-static void xgene_gpio_sb_domain_free(struct irq_domain *domain,
-		unsigned int virq,
-		unsigned int nr_irqs)
-{
-	struct irq_data *d;
-	unsigned int i;
-
-	for (i = 0; i < nr_irqs; i++) {
-		d = irq_domain_get_irq_data(domain, virq + i);
-		irq_domain_reset_irq_data(d);
-	}
-}
-
 static const struct irq_domain_ops xgene_gpio_sb_domain_ops = {
 	.translate      = xgene_gpio_sb_domain_translate,
 	.alloc          = xgene_gpio_sb_domain_alloc,
-	.free           = xgene_gpio_sb_domain_free,
+	.free           = irq_domain_free_irqs_common,
 	.activate	= xgene_gpio_sb_domain_activate,
 	.deactivate	= xgene_gpio_sb_domain_deactivate,
 };
@@ -244,7 +230,6 @@ static int xgene_gpio_sb_probe(struct platform_device *pdev)
 	struct resource *res;
 	void __iomem *regs;
 	struct irq_domain *parent_domain = NULL;
-	struct fwnode_handle *fwnode;
 	u32 val32;
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
@@ -298,18 +283,13 @@ static int xgene_gpio_sb_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, priv);
 
-	if (pdev->dev.of_node)
-		fwnode = of_node_to_fwnode(pdev->dev.of_node);
-	else
-		fwnode = pdev->dev.fwnode;
-
 	priv->irq_domain = irq_domain_create_hierarchy(parent_domain,
-					0, priv->nirq, fwnode,
+					0, priv->nirq, pdev->dev.fwnode,
 					&xgene_gpio_sb_domain_ops, priv);
 	if (!priv->irq_domain)
 		return -ENODEV;
 
-	priv->gc.irqdomain = priv->irq_domain;
+	priv->gc.irq.domain = priv->irq_domain;
 
 	ret = devm_gpiochip_add_data(&pdev->dev, &priv->gc, priv);
 	if (ret) {

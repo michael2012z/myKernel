@@ -20,6 +20,7 @@
 #include <linux/reservation.h>
 #include "etnaviv_drv.h"
 
+struct dma_fence;
 struct etnaviv_gem_ops;
 struct etnaviv_gem_object;
 
@@ -79,6 +80,7 @@ struct etnaviv_gem_ops {
 	int (*get_pages)(struct etnaviv_gem_object *);
 	void (*release)(struct etnaviv_gem_object *);
 	void *(*vmap)(struct etnaviv_gem_object *);
+	int (*mmap)(struct etnaviv_gem_object *, struct vm_area_struct *);
 };
 
 static inline bool is_active(struct etnaviv_gem_object *etnaviv_obj)
@@ -103,9 +105,11 @@ struct etnaviv_gem_submit {
 	struct drm_device *dev;
 	struct etnaviv_gpu *gpu;
 	struct ww_acquire_ctx ticket;
-	u32 fence;
+	struct dma_fence *fence;
+	u32 flags;
 	unsigned int nr_bos;
 	struct etnaviv_gem_submit_bo bos[0];
+	/* No new members here, the previous one is variable-length! */
 };
 
 int etnaviv_gem_wait_bo(struct etnaviv_gpu *gpu, struct drm_gem_object *obj,

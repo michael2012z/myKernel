@@ -1717,9 +1717,8 @@ static void
 inithfcpci(struct hfc_pci *hc)
 {
 	printk(KERN_DEBUG "inithfcpci: entered\n");
-	hc->dch.timer.function = (void *) hfcpci_dbusy_timer;
-	hc->dch.timer.data = (long) &hc->dch;
-	init_timer(&hc->dch.timer);
+	setup_timer(&hc->dch.timer, (void *)hfcpci_dbusy_timer,
+		    (long)&hc->dch);
 	hc->chanlimit = 2;
 	mode_hfcpci(&hc->bch[0], 1, -1);
 	mode_hfcpci(&hc->bch[1], 2, -1);
@@ -2044,9 +2043,7 @@ setup_hw(struct hfc_pci *hc)
 	Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
 	/* At this point the needed PCI config is done */
 	/* fifos are still not enabled */
-	hc->hw.timer.function = (void *) hfcpci_Timer;
-	hc->hw.timer.data = (long) hc;
-	init_timer(&hc->hw.timer);
+	setup_timer(&hc->hw.timer, (void *)hfcpci_Timer, (long)hc);
 	/* default PCM master */
 	test_and_set_bit(HFC_CFG_MASTER, &hc->cfg);
 	return 0;
@@ -2164,7 +2161,7 @@ static const struct _hfc_map hfc_map[] =
 	{},
 };
 
-static struct pci_device_id hfc_ids[] =
+static const struct pci_device_id hfc_ids[] =
 {
 	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_2BD0),
 	  (unsigned long) &hfc_map[0] },
@@ -2268,7 +2265,7 @@ static struct pci_driver hfc_driver = {
 };
 
 static int
-_hfcpci_softirq(struct device *dev, void *arg)
+_hfcpci_softirq(struct device *dev, void *unused)
 {
 	struct hfc_pci  *hc = dev_get_drvdata(dev);
 	struct bchannel *bch;
@@ -2293,9 +2290,9 @@ _hfcpci_softirq(struct device *dev, void *arg)
 }
 
 static void
-hfcpci_softirq(void *arg)
+hfcpci_softirq(struct timer_list *unused)
 {
-	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, arg,
+	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, NULL,
 				      _hfcpci_softirq) != 0);
 
 	/* if next event would be in the past ... */
@@ -2330,9 +2327,7 @@ HFC_init(void)
 	if (poll != HFCPCI_BTRANS_THRESHOLD) {
 		printk(KERN_INFO "%s: Using alternative poll value of %d\n",
 		       __func__, poll);
-		hfc_tl.function = (void *)hfcpci_softirq;
-		hfc_tl.data = 0;
-		init_timer(&hfc_tl);
+		timer_setup(&hfc_tl, hfcpci_softirq, 0);
 		hfc_tl.expires = jiffies + tics;
 		hfc_jiffies = hfc_tl.expires;
 		add_timer(&hfc_tl);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This file is included twice from vdso2c.c.  It generates code for 32-bit
  * and 64-bit vDSOs.  We need both for 64-bit builds, since 32-bit vDSOs
@@ -21,6 +22,9 @@ static void BITSFUNC(go)(void *raw_addr, size_t raw_len,
 	INT_BITS syms[NSYMS] = {};
 
 	ELF(Phdr) *pt = (ELF(Phdr) *)(raw_addr + GET_LE(&hdr->e_phoff));
+
+	if (GET_LE(&hdr->e_type) != ET_DYN)
+		fail("input is not a shared object\n");
 
 	/* Walk the segment table. */
 	for (i = 0; i < GET_LE(&hdr->e_phnum); i++) {
@@ -48,6 +52,9 @@ static void BITSFUNC(go)(void *raw_addr, size_t raw_len,
 
 	if (stripped_len < load_size)
 		fail("stripped input is too short\n");
+
+	if (!dyn)
+		fail("input has no PT_DYNAMIC section -- your toolchain is buggy\n");
 
 	/* Walk the dynamic table */
 	for (i = 0; dyn + i < dyn_end &&

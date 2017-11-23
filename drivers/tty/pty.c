@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 1991, 1992  Linus Torvalds
  *
@@ -12,7 +13,7 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/fcntl.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/string.h>
 #include <linux/major.h>
 #include <linux/mm.h>
@@ -24,6 +25,9 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/poll.h>
+#include <linux/mount.h>
+#include <linux/file.h>
+#include <linux/ioctl.h>
 
 #undef TTY_DEBUG_HANGUP
 #ifdef TTY_DEBUG_HANGUP
@@ -44,7 +48,7 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 	if (tty->driver->subtype == PTY_TYPE_MASTER)
 		WARN_ON(tty->count > 1);
 	else {
-		if (test_bit(TTY_IO_ERROR, &tty->flags))
+		if (tty_io_error(tty))
 			return;
 		if (tty->count > 2)
 			return;
@@ -59,7 +63,7 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 	if (!tty->link)
 		return;
 	set_bit(TTY_OTHER_CLOSED, &tty->link->flags);
-	tty_flip_buffer_push(tty->link->port);
+	wake_up_interruptible(&tty->link->read_wait);
 	wake_up_interruptible(&tty->link->write_wait);
 	if (tty->driver->subtype == PTY_TYPE_MASTER) {
 		set_bit(TTY_OTHER_CLOSED, &tty->flags);
@@ -216,16 +220,11 @@ static int pty_signal(struct tty_struct *tty, int sig)
 static void pty_flush_buffer(struct tty_struct *tty)
 {
 	struct tty_struct *to = tty->link;
-	struct tty_ldisc *ld;
 
 	if (!to)
 		return;
 
-	ld = tty_ldisc_ref(to);
-	tty_buffer_flush(to, ld);
-	if (ld)
-		tty_ldisc_deref(ld);
-
+	tty_buffer_flush(to, NULL);
 	if (to->packet) {
 		spin_lock_irq(&tty->ctrl_lock);
 		tty->ctrl_status |= TIOCPKT_FLUSHWRITE;
@@ -247,9 +246,7 @@ static int pty_open(struct tty_struct *tty, struct file *filp)
 		goto out;
 
 	clear_bit(TTY_IO_ERROR, &tty->flags);
-	/* TTY_OTHER_CLOSED must be cleared before TTY_OTHER_DONE */
 	clear_bit(TTY_OTHER_CLOSED, &tty->link->flags);
-	clear_bit(TTY_OTHER_DONE, &tty->link->flags);
 	set_bit(TTY_THROTTLED, &tty->flags);
 	return 0;
 
@@ -488,6 +485,16 @@ static int pty_bsd_ioctl(struct tty_struct *tty,
 	return -ENOIOCTLCMD;
 }
 
+static long pty_bsd_compat_ioctl(struct tty_struct *tty,
+				 unsigned int cmd, unsigned long arg)
+{
+	/*
+	 * PTY ioctls don't require any special translation between 32-bit and
+	 * 64-bit userspace, they are already compatible.
+	 */
+	return pty_bsd_ioctl(tty, cmd, arg);
+}
+
 static int legacy_count = CONFIG_LEGACY_PTY_COUNT;
 /*
  * not really modular, but the easiest way to keep compat with existing
@@ -509,6 +516,7 @@ static const struct tty_operations master_pty_ops_bsd = {
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.ioctl = pty_bsd_ioctl,
+	.compat_ioctl = pty_bsd_compat_ioctl,
 	.cleanup = pty_cleanup,
 	.resize = pty_resize,
 	.remove = pty_remove
@@ -592,8 +600,57 @@ static inline void legacy_pty_init(void) { }
 
 /* Unix98 devices */
 #ifdef CONFIG_UNIX98_PTYS
-
 static struct cdev ptmx_cdev;
+
+/**
+ *	ptm_open_peer - open the peer of a pty
+ *	@master: the open struct file of the ptmx device node
+ *	@tty: the master of the pty being opened
+ *	@flags: the flags for open
+ *
+ *	Provide a race free way for userspace to open the slave end of a pty
+ *	(where they have the master fd and cannot access or trust the mount
+ *	namespace /dev/pts was mounted inside).
+ */
+int ptm_open_peer(struct file *master, struct tty_struct *tty, int flags)
+{
+	int fd = -1;
+	struct file *filp;
+	int retval = -EINVAL;
+	struct path path;
+
+	if (tty->driver != ptm_driver)
+		return -EIO;
+
+	fd = get_unused_fd_flags(0);
+	if (fd < 0) {
+		retval = fd;
+		goto err;
+	}
+
+	/* Compute the slave's path */
+	path.mnt = devpts_mntget(master, tty->driver_data);
+	if (IS_ERR(path.mnt)) {
+		retval = PTR_ERR(path.mnt);
+		goto err_put;
+	}
+	path.dentry = tty->link->driver_data;
+
+	filp = dentry_open(&path, flags, current_cred());
+	mntput(path.mnt);
+	if (IS_ERR(filp)) {
+		retval = PTR_ERR(filp);
+		goto err_put;
+	}
+
+	fd_install(fd, filp);
+	return fd;
+
+err_put:
+	put_unused_fd(fd);
+err:
+	return retval;
+}
 
 static int pty_unix98_ioctl(struct tty_struct *tty,
 			    unsigned int cmd, unsigned long arg)
@@ -614,6 +671,16 @@ static int pty_unix98_ioctl(struct tty_struct *tty,
 	}
 
 	return -ENOIOCTLCMD;
+}
+
+static long pty_unix98_compat_ioctl(struct tty_struct *tty,
+				 unsigned int cmd, unsigned long arg)
+{
+	/*
+	 * PTY ioctls don't require any special translation between 32-bit and
+	 * 64-bit userspace, they are already compatible.
+	 */
+	return pty_unix98_ioctl(tty, cmd, arg);
 }
 
 /**
@@ -669,8 +736,16 @@ static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 		fsi = tty->driver_data;
 	else
 		fsi = tty->link->driver_data;
-	devpts_kill_index(fsi, tty->index);
-	devpts_put_ref(fsi);
+
+	if (fsi) {
+		devpts_kill_index(fsi, tty->index);
+		devpts_release(fsi);
+	}
+}
+
+static void pty_show_fdinfo(struct tty_struct *tty, struct seq_file *m)
+{
+	seq_printf(m, "tty-index:\t%d\n", tty->index);
 }
 
 static const struct tty_operations ptm_unix98_ops = {
@@ -685,8 +760,10 @@ static const struct tty_operations ptm_unix98_ops = {
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.ioctl = pty_unix98_ioctl,
+	.compat_ioctl = pty_unix98_compat_ioctl,
 	.resize = pty_resize,
-	.cleanup = pty_cleanup
+	.cleanup = pty_cleanup,
+	.show_fdinfo = pty_show_fdinfo,
 };
 
 static const struct tty_operations pty_unix98_ops = {
@@ -735,10 +812,11 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	if (retval)
 		return retval;
 
-	fsi = devpts_get_ref(inode, filp);
-	retval = -ENODEV;
-	if (!fsi)
+	fsi = devpts_acquire(filp);
+	if (IS_ERR(fsi)) {
+		retval = PTR_ERR(fsi);
 		goto out_free_file;
+	}
 
 	/* find a device that is not in use. */
 	mutex_lock(&devpts_mutex);
@@ -747,7 +825,7 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 
 	retval = index;
 	if (index < 0)
-		goto out_put_ref;
+		goto out_put_fsi;
 
 
 	mutex_lock(&tty_mutex);
@@ -791,14 +869,14 @@ err_release:
 	return retval;
 out:
 	devpts_kill_index(fsi, index);
-out_put_ref:
-	devpts_put_ref(fsi);
+out_put_fsi:
+	devpts_release(fsi);
 out_free_file:
 	tty_free_file(filp);
 	return retval;
 }
 
-static struct file_operations ptmx_fops;
+static struct file_operations ptmx_fops __ro_after_init;
 
 static void __init unix98_pty_init(void)
 {

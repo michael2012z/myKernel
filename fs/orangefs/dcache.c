@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * (C) 2001 Clemson University and The University of Chicago
  *
@@ -73,6 +74,7 @@ static int orangefs_revalidate_lookup(struct dentry *dentry)
 		}
 	}
 
+	orangefs_set_timeout(dentry);
 	ret = 1;
 out_release_op:
 	op_release(new_op);
@@ -93,6 +95,10 @@ out_drop:
 static int orangefs_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	int ret;
+	unsigned long time = (unsigned long) dentry->d_fsdata;
+
+	if (time_before(jiffies, time))
+		return 1;
 
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;

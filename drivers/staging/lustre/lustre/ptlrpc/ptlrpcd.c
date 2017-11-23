@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -55,15 +52,15 @@
 
 #define DEBUG_SUBSYSTEM S_RPC
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
-#include "../include/lustre_net.h"
-#include "../include/lustre_lib.h"
-#include "../include/lustre_ha.h"
-#include "../include/obd_class.h"	/* for obd_zombie */
-#include "../include/obd_support.h"	/* for OBD_FAIL_CHECK */
-#include "../include/cl_object.h"	/* cl_env_{get,put}() */
-#include "../include/lprocfs_status.h"
+#include <lustre_net.h>
+#include <lustre_lib.h>
+#include <lustre_ha.h>
+#include <obd_class.h>		/* for obd_zombie */
+#include <obd_support.h>	/* for OBD_FAIL_CHECK */
+#include <cl_object.h>		/* cl_env_{get,put}() */
+#include <lprocfs_status.h>
 
 #include "ptlrpc_internal.h"
 
@@ -86,7 +83,8 @@ struct ptlrpcd {
  */
 static int max_ptlrpcds;
 module_param(max_ptlrpcds, int, 0644);
-MODULE_PARM_DESC(max_ptlrpcds, "Max ptlrpcd thread count to be started.");
+MODULE_PARM_DESC(max_ptlrpcds,
+		 "Max ptlrpcd thread count to be started (obsolete).");
 
 /*
  * ptlrpcd_bind_policy is obsolete, but retained to ensure that
@@ -106,7 +104,7 @@ MODULE_PARM_DESC(ptlrpcd_bind_policy,
 static int ptlrpcd_per_cpt_max;
 module_param(ptlrpcd_per_cpt_max, int, 0644);
 MODULE_PARM_DESC(ptlrpcd_per_cpt_max,
-		 "Max ptlrpcd thread count to be started per cpt.");
+		 "Max ptlrpcd thread count to be started per CPT.");
 
 /*
  * ptlrpcd_partner_group_size: The desired number of threads in each
@@ -161,9 +159,9 @@ static int ptlrpcd_users;
 
 void ptlrpcd_wake(struct ptlrpc_request *req)
 {
-	struct ptlrpc_request_set *rq_set = req->rq_set;
+	struct ptlrpc_request_set *set = req->rq_set;
 
-	wake_up(&rq_set->set_waitq);
+	wake_up(&set->set_waitq);
 }
 EXPORT_SYMBOL(ptlrpcd_wake);
 
@@ -387,7 +385,8 @@ static int ptlrpcd(void *arg)
 {
 	struct ptlrpcd_ctl *pc = arg;
 	struct ptlrpc_request_set *set;
-	struct lu_env env = { .le_ses = NULL };
+	struct lu_context ses = { 0 };
+	struct lu_env env = { .le_ses = &ses };
 	int rc = 0;
 	int exit = 0;
 
@@ -415,7 +414,14 @@ static int ptlrpcd(void *arg)
 	 * an argument, describing its "scope".
 	 */
 	rc = lu_context_init(&env.le_ctx,
-			     LCT_CL_THREAD|LCT_REMEMBER|LCT_NOREF);
+			     LCT_CL_THREAD | LCT_REMEMBER | LCT_NOREF);
+	if (rc == 0) {
+		rc = lu_context_init(env.le_ses,
+				     LCT_SESSION | LCT_REMEMBER | LCT_NOREF);
+		if (rc != 0)
+			lu_context_fini(&env.le_ctx);
+	}
+
 	if (rc != 0)
 		goto failed;
 
@@ -436,9 +442,10 @@ static int ptlrpcd(void *arg)
 				  ptlrpc_expired_set, set);
 
 		lu_context_enter(&env.le_ctx);
-		l_wait_event(set->set_waitq,
-			     ptlrpcd_check(&env, pc), &lwi);
+		lu_context_enter(env.le_ses);
+		l_wait_event(set->set_waitq, ptlrpcd_check(&env, pc), &lwi);
 		lu_context_exit(&env.le_ctx);
+		lu_context_exit(env.le_ses);
 
 		/*
 		 * Abort inflight rpcs for forced stop case.
@@ -461,6 +468,7 @@ static int ptlrpcd(void *arg)
 	if (!list_empty(&set->set_requests))
 		ptlrpc_set_wait(set);
 	lu_context_fini(&env.le_ctx);
+	lu_context_fini(env.le_ses);
 
 	complete(&pc->pc_finishing);
 
@@ -556,15 +564,6 @@ int ptlrpcd_start(struct ptlrpcd_ctl *pc)
 		return 0;
 	}
 
-	/*
-	 * So far only "client" ptlrpcd uses an environment. In the future,
-	 * ptlrpcd thread (or a thread-set) has to be given an argument,
-	 * describing its "scope".
-	 */
-	rc = lu_context_init(&pc->pc_env.le_ctx, LCT_CL_THREAD|LCT_REMEMBER);
-	if (rc != 0)
-		goto out;
-
 	task = kthread_run(ptlrpcd, pc, "%s", pc->pc_name);
 	if (IS_ERR(task)) {
 		rc = PTR_ERR(task);
@@ -587,9 +586,6 @@ out_set:
 		spin_unlock(&pc->pc_lock);
 		ptlrpc_set_destroy(set);
 	}
-	lu_context_fini(&pc->pc_env.le_ctx);
-
-out:
 	clear_bit(LIOD_START, &pc->pc_flags);
 	return rc;
 }
@@ -617,7 +613,6 @@ void ptlrpcd_free(struct ptlrpcd_ctl *pc)
 	}
 
 	wait_for_completion(&pc->pc_finishing);
-	lu_context_fini(&pc->pc_env.le_ctx);
 
 	spin_lock(&pc->pc_lock);
 	pc->pc_set = NULL;
@@ -899,8 +894,11 @@ int ptlrpcd_addref(void)
 	int rc = 0;
 
 	mutex_lock(&ptlrpcd_mutex);
-	if (++ptlrpcd_users == 1)
+	if (++ptlrpcd_users == 1) {
 		rc = ptlrpcd_init();
+		if (rc < 0)
+			ptlrpcd_users--;
+	}
 	mutex_unlock(&ptlrpcd_mutex);
 	return rc;
 }

@@ -23,12 +23,10 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
-#include <linux/regmap.h>
 #include <linux/slab.h>
 
 struct nvmem_device {
 	const char		*name;
-	struct regmap		*regmap;
 	struct module		*owner;
 	struct device		dev;
 	int			stride;
@@ -41,6 +39,9 @@ struct nvmem_device {
 	int			flags;
 	struct bin_attribute	eeprom;
 	struct device		*base_dev;
+	nvmem_reg_read_t	reg_read;
+	nvmem_reg_write_t	reg_write;
+	void *priv;
 };
 
 #define FLAG_COMPAT		BIT(0)
@@ -66,6 +67,23 @@ static struct lock_class_key eeprom_lock_key;
 #endif
 
 #define to_nvmem_device(d) container_of(d, struct nvmem_device, dev)
+static int nvmem_reg_read(struct nvmem_device *nvmem, unsigned int offset,
+			  void *val, size_t bytes)
+{
+	if (nvmem->reg_read)
+		return nvmem->reg_read(nvmem->priv, offset, val, bytes);
+
+	return -EINVAL;
+}
+
+static int nvmem_reg_write(struct nvmem_device *nvmem, unsigned int offset,
+			   void *val, size_t bytes)
+{
+	if (nvmem->reg_write)
+		return nvmem->reg_write(nvmem->priv, offset, val, bytes);
+
+	return -EINVAL;
+}
 
 static ssize_t bin_attr_nvmem_read(struct file *filp, struct kobject *kobj,
 				    struct bin_attribute *attr,
@@ -93,9 +111,9 @@ static ssize_t bin_attr_nvmem_read(struct file *filp, struct kobject *kobj,
 
 	count = round_down(count, nvmem->word_size);
 
-	rc = regmap_raw_read(nvmem->regmap, pos, buf, count);
+	rc = nvmem_reg_read(nvmem, pos, buf, count);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return count;
@@ -117,7 +135,7 @@ static ssize_t bin_attr_nvmem_write(struct file *filp, struct kobject *kobj,
 
 	/* Stop the user from writing */
 	if (pos >= nvmem->size)
-		return 0;
+		return -EFBIG;
 
 	if (count < nvmem->word_size)
 		return -EINVAL;
@@ -127,9 +145,9 @@ static ssize_t bin_attr_nvmem_write(struct file *filp, struct kobject *kobj,
 
 	count = round_down(count, nvmem->word_size);
 
-	rc = regmap_raw_write(nvmem->regmap, pos, buf, count);
+	rc = nvmem_reg_write(nvmem, pos, buf, count);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return count;
@@ -269,9 +287,15 @@ static struct nvmem_cell *nvmem_find_cell(const char *cell_id)
 {
 	struct nvmem_cell *p;
 
+	mutex_lock(&nvmem_cells_mutex);
+
 	list_for_each_entry(p, &nvmem_cells, node)
-		if (p && !strcmp(p->name, cell_id))
+		if (!strcmp(p->name, cell_id)) {
+			mutex_unlock(&nvmem_cells_mutex);
 			return p;
+		}
+
+	mutex_unlock(&nvmem_cells_mutex);
 
 	return NULL;
 }
@@ -348,7 +372,7 @@ static int nvmem_add_cells(struct nvmem_device *nvmem,
 		}
 
 		rval = nvmem_cell_info_to_nvmem_cell(nvmem, &info[i], cells[i]);
-		if (IS_ERR_VALUE(rval)) {
+		if (rval) {
 			kfree(cells[i]);
 			goto err;
 		}
@@ -421,17 +445,10 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 {
 	struct nvmem_device *nvmem;
 	struct device_node *np;
-	struct regmap *rm;
 	int rval;
 
 	if (!config->dev)
 		return ERR_PTR(-EINVAL);
-
-	rm = dev_get_regmap(config->dev, NULL);
-	if (!rm) {
-		dev_err(config->dev, "Regmap not found\n");
-		return ERR_PTR(-EINVAL);
-	}
 
 	nvmem = kzalloc(sizeof(*nvmem), GFP_KERNEL);
 	if (!nvmem)
@@ -444,18 +461,23 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 	}
 
 	nvmem->id = rval;
-	nvmem->regmap = rm;
 	nvmem->owner = config->owner;
-	nvmem->stride = regmap_get_reg_stride(rm);
-	nvmem->word_size = regmap_get_val_bytes(rm);
-	nvmem->size = regmap_get_max_register(rm) + nvmem->stride;
+	if (!nvmem->owner && config->dev->driver)
+		nvmem->owner = config->dev->driver->owner;
+	nvmem->stride = config->stride;
+	nvmem->word_size = config->word_size;
+	nvmem->size = config->size;
 	nvmem->dev.type = &nvmem_provider_type;
 	nvmem->dev.bus = &nvmem_bus_type;
 	nvmem->dev.parent = config->dev;
+	nvmem->priv = config->priv;
+	nvmem->reg_read = config->reg_read;
+	nvmem->reg_write = config->reg_write;
 	np = config->dev->of_node;
 	nvmem->dev.of_node = np;
 	dev_set_name(&nvmem->dev, "%s%d",
-		     config->name ? : "nvmem", config->id);
+		     config->name ? : "nvmem",
+		     config->name ? config->id : nvmem->id);
 
 	nvmem->read_only = of_property_read_bool(np, "read-only") |
 			   config->read_only;
@@ -475,21 +497,24 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 
 	rval = device_add(&nvmem->dev);
 	if (rval)
-		goto out;
+		goto err_put_device;
 
 	if (config->compat) {
 		rval = nvmem_setup_compat(nvmem, config);
 		if (rval)
-			goto out;
+			goto err_device_del;
 	}
 
 	if (config->cells)
 		nvmem_add_cells(nvmem, config);
 
 	return nvmem;
-out:
-	ida_simple_remove(&nvmem_ida, nvmem->id);
-	kfree(nvmem);
+
+err_device_del:
+	device_del(&nvmem->dev);
+err_put_device:
+	put_device(&nvmem->dev);
+
 	return ERR_PTR(rval);
 }
 EXPORT_SYMBOL_GPL(nvmem_register);
@@ -515,6 +540,7 @@ int nvmem_unregister(struct nvmem_device *nvmem)
 
 	nvmem_device_remove_all_cells(nvmem);
 	device_del(&nvmem->dev);
+	put_device(&nvmem->dev);
 
 	return 0;
 }
@@ -591,11 +617,11 @@ static struct nvmem_device *nvmem_find(const char *name)
 	return to_nvmem_device(d);
 }
 
-#if IS_ENABLED(CONFIG_NVMEM) && IS_ENABLED(CONFIG_OF)
+#if IS_ENABLED(CONFIG_OF)
 /**
  * of_nvmem_device_get() - Get nvmem device from a given id
  *
- * @dev node: Device tree node that uses the nvmem device
+ * @np: Device tree node that uses the nvmem device.
  * @id: nvmem name from nvmem-names property.
  *
  * Return: ERR_PTR() on error or a valid pointer to a struct nvmem_device
@@ -621,8 +647,8 @@ EXPORT_SYMBOL_GPL(of_nvmem_device_get);
 /**
  * nvmem_device_get() - Get nvmem device from a given id
  *
- * @dev : Device that uses the nvmem device
- * @id: nvmem name from nvmem-names property.
+ * @dev: Device that uses the nvmem device.
+ * @dev_name: name of the requested nvmem device.
  *
  * Return: ERR_PTR() on error or a valid pointer to a struct nvmem_device
  * on success.
@@ -661,6 +687,7 @@ static void devm_nvmem_device_release(struct device *dev, void *res)
 /**
  * devm_nvmem_device_put() - put alredy got nvmem device
  *
+ * @dev: Device that uses the nvmem device.
  * @nvmem: pointer to nvmem device allocated by devm_nvmem_cell_get(),
  * that needs to be released.
  */
@@ -689,8 +716,8 @@ EXPORT_SYMBOL_GPL(nvmem_device_put);
 /**
  * devm_nvmem_device_get() - Get nvmem cell of device form a given id
  *
- * @dev node: Device tree node that uses the nvmem cell
- * @id: nvmem name in nvmems property.
+ * @dev: Device that requests the nvmem device.
+ * @id: name id for the requested nvmem device.
  *
  * Return: ERR_PTR() on error or a valid pointer to a struct nvmem_cell
  * on success.  The nvmem_cell will be freed by the automatically once the
@@ -728,12 +755,14 @@ static struct nvmem_cell *nvmem_cell_get_from_list(const char *cell_id)
 	return cell;
 }
 
-#if IS_ENABLED(CONFIG_NVMEM) && IS_ENABLED(CONFIG_OF)
+#if IS_ENABLED(CONFIG_OF)
 /**
  * of_nvmem_cell_get() - Get a nvmem cell from given device node and cell id
  *
- * @dev node: Device tree node that uses the nvmem cell
- * @id: nvmem cell name from nvmem-cell-names property.
+ * @np: Device tree node that uses the nvmem cell.
+ * @name: nvmem cell name from nvmem-cell-names property, or NULL
+ *	  for the cell at index 0 (the lone cell with no accompanying
+ *	  nvmem-cell-names property).
  *
  * Return: Will be an ERR_PTR() on error or a valid pointer
  * to a struct nvmem_cell.  The nvmem_cell will be freed by the
@@ -746,9 +775,12 @@ struct nvmem_cell *of_nvmem_cell_get(struct device_node *np,
 	struct nvmem_cell *cell;
 	struct nvmem_device *nvmem;
 	const __be32 *addr;
-	int rval, len, index;
+	int rval, len;
+	int index = 0;
 
-	index = of_property_match_string(np, "nvmem-cell-names", name);
+	/* if cell name exists, find index to the name */
+	if (name)
+		index = of_property_match_string(np, "nvmem-cell-names", name);
 
 	cell_np = of_parse_phandle(np, "nvmem-cells", index);
 	if (!cell_np)
@@ -759,13 +791,14 @@ struct nvmem_cell *of_nvmem_cell_get(struct device_node *np,
 		return ERR_PTR(-EINVAL);
 
 	nvmem = __nvmem_device_get(nvmem_np, NULL, NULL);
+	of_node_put(nvmem_np);
 	if (IS_ERR(nvmem))
 		return ERR_CAST(nvmem);
 
 	addr = of_get_property(cell_np, "reg", &len);
 	if (!addr || (len < 2 * sizeof(u32))) {
-		dev_err(&nvmem->dev, "nvmem: invalid reg on %s\n",
-			cell_np->full_name);
+		dev_err(&nvmem->dev, "nvmem: invalid reg on %pOF\n",
+			cell_np);
 		rval  = -EINVAL;
 		goto err_mem;
 	}
@@ -817,8 +850,8 @@ EXPORT_SYMBOL_GPL(of_nvmem_cell_get);
 /**
  * nvmem_cell_get() - Get nvmem cell of device form a given cell name
  *
- * @dev node: Device tree node that uses the nvmem cell
- * @id: nvmem cell name to get.
+ * @dev: Device that requests the nvmem cell.
+ * @cell_id: nvmem cell name to get.
  *
  * Return: Will be an ERR_PTR() on error or a valid pointer
  * to a struct nvmem_cell.  The nvmem_cell will be freed by the
@@ -846,8 +879,8 @@ static void devm_nvmem_cell_release(struct device *dev, void *res)
 /**
  * devm_nvmem_cell_get() - Get nvmem cell of device form a given id
  *
- * @dev node: Device tree node that uses the nvmem cell
- * @id: nvmem id in nvmem-names property.
+ * @dev: Device that requests the nvmem cell.
+ * @id: nvmem cell name id to get.
  *
  * Return: Will be an ERR_PTR() on error or a valid pointer
  * to a struct nvmem_cell.  The nvmem_cell will be freed by the
@@ -887,7 +920,8 @@ static int devm_nvmem_cell_match(struct device *dev, void *res, void *data)
  * devm_nvmem_cell_put() - Release previously allocated nvmem cell
  * from devm_nvmem_cell_get.
  *
- * @cell: Previously allocated nvmem cell by devm_nvmem_cell_get()
+ * @dev: Device that requests the nvmem cell.
+ * @cell: Previously allocated nvmem cell by devm_nvmem_cell_get().
  */
 void devm_nvmem_cell_put(struct device *dev, struct nvmem_cell *cell)
 {
@@ -903,7 +937,7 @@ EXPORT_SYMBOL(devm_nvmem_cell_put);
 /**
  * nvmem_cell_put() - Release previously allocated nvmem cell.
  *
- * @cell: Previously allocated nvmem cell by nvmem_cell_get()
+ * @cell: Previously allocated nvmem cell by nvmem_cell_get().
  */
 void nvmem_cell_put(struct nvmem_cell *cell)
 {
@@ -914,8 +948,7 @@ void nvmem_cell_put(struct nvmem_cell *cell)
 }
 EXPORT_SYMBOL_GPL(nvmem_cell_put);
 
-static inline void nvmem_shift_read_buffer_in_place(struct nvmem_cell *cell,
-						    void *buf)
+static void nvmem_shift_read_buffer_in_place(struct nvmem_cell *cell, void *buf)
 {
 	u8 *p, *b;
 	int i, bit_offset = cell->bit_offset;
@@ -948,16 +981,17 @@ static int __nvmem_cell_read(struct nvmem_device *nvmem,
 {
 	int rc;
 
-	rc = regmap_raw_read(nvmem->regmap, cell->offset, buf, cell->bytes);
+	rc = nvmem_reg_read(nvmem, cell->offset, buf, cell->bytes);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	/* shift bits in-place */
 	if (cell->bit_offset || cell->nbits)
 		nvmem_shift_read_buffer_in_place(cell, buf);
 
-	*len = cell->bytes;
+	if (len)
+		*len = cell->bytes;
 
 	return 0;
 }
@@ -966,10 +1000,11 @@ static int __nvmem_cell_read(struct nvmem_device *nvmem,
  * nvmem_cell_read() - Read a given nvmem cell
  *
  * @cell: nvmem cell to be read.
- * @len: pointer to length of cell which will be populated on successful read.
+ * @len: pointer to length of cell which will be populated on successful read;
+ *	 can be NULL.
  *
- * Return: ERR_PTR() on error or a valid pointer to a char * buffer on success.
- * The buffer should be freed by the consumer with a kfree().
+ * Return: ERR_PTR() on error or a valid pointer to a buffer on success. The
+ * buffer should be freed by the consumer with a kfree().
  */
 void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
 {
@@ -977,7 +1012,7 @@ void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
 	u8 *buf;
 	int rc;
 
-	if (!nvmem || !nvmem->regmap)
+	if (!nvmem)
 		return ERR_PTR(-EINVAL);
 
 	buf = kzalloc(cell->bytes, GFP_KERNEL);
@@ -985,7 +1020,7 @@ void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
 		return ERR_PTR(-ENOMEM);
 
 	rc = __nvmem_cell_read(nvmem, cell, buf, len);
-	if (IS_ERR_VALUE(rc)) {
+	if (rc) {
 		kfree(buf);
 		return ERR_PTR(rc);
 	}
@@ -994,8 +1029,8 @@ void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
 }
 EXPORT_SYMBOL_GPL(nvmem_cell_read);
 
-static inline void *nvmem_cell_prepare_write_buffer(struct nvmem_cell *cell,
-						    u8 *_buf, int len)
+static void *nvmem_cell_prepare_write_buffer(struct nvmem_cell *cell,
+					     u8 *_buf, int len)
 {
 	struct nvmem_device *nvmem = cell->nvmem;
 	int i, rc, nbits, bit_offset = cell->bit_offset;
@@ -1014,7 +1049,7 @@ static inline void *nvmem_cell_prepare_write_buffer(struct nvmem_cell *cell,
 		*b <<= bit_offset;
 
 		/* setup the first byte with lsb bits from nvmem */
-		rc = regmap_raw_read(nvmem->regmap, cell->offset, &v, 1);
+		rc = nvmem_reg_read(nvmem, cell->offset, &v, 1);
 		*b++ |= GENMASK(bit_offset - 1, 0) & v;
 
 		/* setup rest of the byte if any */
@@ -1031,7 +1066,7 @@ static inline void *nvmem_cell_prepare_write_buffer(struct nvmem_cell *cell,
 	/* if it's not end on byte boundary */
 	if ((nbits + bit_offset) % BITS_PER_BYTE) {
 		/* setup the last byte with msb bits from nvmem */
-		rc = regmap_raw_read(nvmem->regmap,
+		rc = nvmem_reg_read(nvmem,
 				    cell->offset + cell->bytes - 1, &v, 1);
 		*p |= GENMASK(7, (nbits + bit_offset) % BITS_PER_BYTE) & v;
 
@@ -1054,7 +1089,7 @@ int nvmem_cell_write(struct nvmem_cell *cell, void *buf, size_t len)
 	struct nvmem_device *nvmem = cell->nvmem;
 	int rc;
 
-	if (!nvmem || !nvmem->regmap || nvmem->read_only ||
+	if (!nvmem || nvmem->read_only ||
 	    (cell->bit_offset == 0 && len != cell->bytes))
 		return -EINVAL;
 
@@ -1064,18 +1099,55 @@ int nvmem_cell_write(struct nvmem_cell *cell, void *buf, size_t len)
 			return PTR_ERR(buf);
 	}
 
-	rc = regmap_raw_write(nvmem->regmap, cell->offset, buf, cell->bytes);
+	rc = nvmem_reg_write(nvmem, cell->offset, buf, cell->bytes);
 
 	/* free the tmp buffer */
 	if (cell->bit_offset || cell->nbits)
 		kfree(buf);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return len;
 }
 EXPORT_SYMBOL_GPL(nvmem_cell_write);
+
+/**
+ * nvmem_cell_read_u32() - Read a cell value as an u32
+ *
+ * @dev: Device that requests the nvmem cell.
+ * @cell_id: Name of nvmem cell to read.
+ * @val: pointer to output value.
+ *
+ * Return: 0 on success or negative errno.
+ */
+int nvmem_cell_read_u32(struct device *dev, const char *cell_id, u32 *val)
+{
+	struct nvmem_cell *cell;
+	void *buf;
+	size_t len;
+
+	cell = nvmem_cell_get(dev, cell_id);
+	if (IS_ERR(cell))
+		return PTR_ERR(cell);
+
+	buf = nvmem_cell_read(cell, &len);
+	if (IS_ERR(buf)) {
+		nvmem_cell_put(cell);
+		return PTR_ERR(buf);
+	}
+	if (len != sizeof(*val)) {
+		kfree(buf);
+		nvmem_cell_put(cell);
+		return -EINVAL;
+	}
+	memcpy(val, buf, sizeof(*val));
+
+	kfree(buf);
+	nvmem_cell_put(cell);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nvmem_cell_read_u32);
 
 /**
  * nvmem_device_cell_read() - Read a given nvmem device and cell
@@ -1094,15 +1166,15 @@ ssize_t nvmem_device_cell_read(struct nvmem_device *nvmem,
 	int rc;
 	ssize_t len;
 
-	if (!nvmem || !nvmem->regmap)
+	if (!nvmem)
 		return -EINVAL;
 
 	rc = nvmem_cell_info_to_nvmem_cell(nvmem, info, &cell);
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	rc = __nvmem_cell_read(nvmem, &cell, buf, &len);
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return len;
@@ -1113,7 +1185,7 @@ EXPORT_SYMBOL_GPL(nvmem_device_cell_read);
  * nvmem_device_cell_write() - Write cell to a given nvmem device
  *
  * @nvmem: nvmem device to be written to.
- * @info: nvmem cell info to be written
+ * @info: nvmem cell info to be written.
  * @buf: buffer to be written to cell.
  *
  * Return: length of bytes written or negative error code on failure.
@@ -1124,11 +1196,11 @@ int nvmem_device_cell_write(struct nvmem_device *nvmem,
 	struct nvmem_cell cell;
 	int rc;
 
-	if (!nvmem || !nvmem->regmap)
+	if (!nvmem)
 		return -EINVAL;
 
 	rc = nvmem_cell_info_to_nvmem_cell(nvmem, info, &cell);
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return nvmem_cell_write(&cell, buf, cell.bytes);
@@ -1152,12 +1224,12 @@ int nvmem_device_read(struct nvmem_device *nvmem,
 {
 	int rc;
 
-	if (!nvmem || !nvmem->regmap)
+	if (!nvmem)
 		return -EINVAL;
 
-	rc = regmap_raw_read(nvmem->regmap, offset, buf, bytes);
+	rc = nvmem_reg_read(nvmem, offset, buf, bytes);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 	return bytes;
@@ -1180,12 +1252,12 @@ int nvmem_device_write(struct nvmem_device *nvmem,
 {
 	int rc;
 
-	if (!nvmem || !nvmem->regmap)
+	if (!nvmem)
 		return -EINVAL;
 
-	rc = regmap_raw_write(nvmem->regmap, offset, buf, bytes);
+	rc = nvmem_reg_write(nvmem, offset, buf, bytes);
 
-	if (IS_ERR_VALUE(rc))
+	if (rc)
 		return rc;
 
 

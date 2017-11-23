@@ -255,7 +255,7 @@ static void lp_gpio_irq_handler(struct irq_desc *desc)
 			mask = BIT(pin);
 			/* Clear before handling so we don't lose an edge */
 			outl(mask, reg);
-			irq = irq_find_mapping(lg->chip.irqdomain, base + pin);
+			irq = irq_find_mapping(lg->chip.irq.domain, base + pin);
 			generic_handle_irq(irq);
 		}
 	}
@@ -383,7 +383,6 @@ static int lp_gpio_probe(struct platform_device *pdev)
 					   handle_simple_irq, IRQ_TYPE_NONE);
 		if (ret) {
 			dev_err(dev, "failed to add irqchip\n");
-			gpiochip_remove(gc);
 			return ret;
 		}
 

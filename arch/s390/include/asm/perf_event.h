@@ -1,7 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Performance event support - s390 specific definitions.
  *
- * Copyright IBM Corp. 2009, 2013
+ * Copyright IBM Corp. 2009, 2017
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  *	      Hendrik Brueckner <brueckner@linux.vnet.ibm.com>
  */
@@ -47,7 +48,7 @@ struct perf_sf_sde_regs {
 };
 
 /* Perf PMU definitions for the counter facility */
-#define PERF_CPUM_CF_MAX_CTR		256
+#define PERF_CPUM_CF_MAX_CTR		0xffffUL  /* Max ctr for ECCTR */
 
 /* Perf PMU definitions for the sampling facility */
 #define PERF_CPUM_SF_MAX_CTR		2
@@ -63,39 +64,10 @@ struct perf_sf_sde_regs {
 #define REG_OVERFLOW		1
 #define OVERFLOW_REG(hwc)	((hwc)->extra_reg.config)
 #define SFB_ALLOC_REG(hwc)	((hwc)->extra_reg.alloc)
-#define RAWSAMPLE_REG(hwc)	((hwc)->config)
 #define TEAR_REG(hwc)		((hwc)->last_tag)
 #define SAMPL_RATE(hwc)		((hwc)->event_base)
 #define SAMPL_FLAGS(hwc)	((hwc)->config_base)
 #define SAMPL_DIAG_MODE(hwc)	(SAMPL_FLAGS(hwc) & PERF_CPUM_SF_DIAG_MODE)
 #define SDB_FULL_BLOCKS(hwc)	(SAMPL_FLAGS(hwc) & PERF_CPUM_SF_FULL_BLOCKS)
-
-/* Structure for sampling data entries to be passed as perf raw sample data
- * to user space.  Note that raw sample data must be aligned and, thus, might
- * be padded with zeros.
- */
-struct sf_raw_sample {
-#define SF_RAW_SAMPLE_BASIC	PERF_CPUM_SF_BASIC_MODE
-#define SF_RAW_SAMPLE_DIAG	PERF_CPUM_SF_DIAG_MODE
-	u64			format;
-	u32			 size;	  /* Size of sf_raw_sample */
-	u16			bsdes;	  /* Basic-sampling data entry size */
-	u16			dsdes;	  /* Diagnostic-sampling data entry size */
-	struct hws_basic_entry	basic;	  /* Basic-sampling data entry */
-	struct hws_diag_entry	 diag;	  /* Diagnostic-sampling data entry */
-	u8		    padding[];	  /* Padding to next multiple of 8 */
-} __packed;
-
-/* Perf hardware reserve and release functions */
-#ifdef CONFIG_PERF_EVENTS
-int perf_reserve_sampling(void);
-void perf_release_sampling(void);
-#else /* CONFIG_PERF_EVENTS */
-static inline int perf_reserve_sampling(void)
-{
-	return 0;
-}
-static inline void perf_release_sampling(void) {}
-#endif /* CONFIG_PERF_EVENTS */
 
 #endif /* _ASM_S390_PERF_EVENT_H */

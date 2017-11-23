@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -46,9 +43,9 @@
  * @{
  */
 
-#include "lprocfs_status.h"
-#include "lustre/lustre_idl.h"
-#include "lustre_dlm.h"
+#include <lprocfs_status.h>
+#include <uapi/linux/lustre/lustre_idl.h>
+#include <lustre_dlm.h>
 
 enum obd_option {
 	OBD_OPT_FORCE =	 0x0001,
@@ -178,19 +175,6 @@ static inline int exp_connect_cancelset(struct obd_export *exp)
 static inline int exp_connect_lru_resize(struct obd_export *exp)
 {
 	return !!(exp_connect_flags(exp) & OBD_CONNECT_LRU_RESIZE);
-}
-
-static inline int exp_connect_rmtclient(struct obd_export *exp)
-{
-	return !!(exp_connect_flags(exp) & OBD_CONNECT_RMT_CLIENT);
-}
-
-static inline int client_is_remote(struct obd_export *exp)
-{
-	struct obd_import *imp = class_exp2cliimp(exp);
-
-	return !!(imp->imp_connect_data.ocd_connect_flags &
-		  OBD_CONNECT_RMT_CLIENT);
 }
 
 static inline int exp_connect_vbr(struct obd_export *exp)

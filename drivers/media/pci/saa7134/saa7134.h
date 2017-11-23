@@ -13,10 +13,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #define SAA7134_VERSION "0, 2, 17"
@@ -610,7 +606,6 @@ struct saa7134_dev {
 
 
 	/* video+ts+vbi capture */
-	void			   *alloc_ctx;
 	struct saa7134_dmaqueue    video_q;
 	struct vb2_queue           video_vbq;
 	struct saa7134_dmaqueue    vbi_q;
@@ -778,7 +773,7 @@ int saa7134_buffer_queue(struct saa7134_dev *dev, struct saa7134_dmaqueue *q,
 void saa7134_buffer_finish(struct saa7134_dev *dev, struct saa7134_dmaqueue *q,
 			   unsigned int state);
 void saa7134_buffer_next(struct saa7134_dev *dev, struct saa7134_dmaqueue *q);
-void saa7134_buffer_timeout(unsigned long data);
+void saa7134_buffer_timeout(struct timer_list *t);
 void saa7134_stop_streaming(struct saa7134_dev *dev, struct saa7134_dmaqueue *q);
 
 int saa7134_set_dmabits(struct saa7134_dev *dev);
@@ -854,7 +849,7 @@ int saa7134_ts_buffer_init(struct vb2_buffer *vb2);
 int saa7134_ts_buffer_prepare(struct vb2_buffer *vb2);
 int saa7134_ts_queue_setup(struct vb2_queue *q,
 			   unsigned int *nbuffers, unsigned int *nplanes,
-			   unsigned int sizes[], void *alloc_ctxs[]);
+			   unsigned int sizes[], struct device *alloc_devs[]);
 int saa7134_ts_start_streaming(struct vb2_queue *vq, unsigned int count);
 void saa7134_ts_stop_streaming(struct vb2_queue *vq);
 
@@ -875,7 +870,7 @@ int saa7134_ts_stop(struct saa7134_dev *dev);
 /* ----------------------------------------------------------- */
 /* saa7134-vbi.c                                               */
 
-extern struct vb2_ops saa7134_vbi_qops;
+extern const struct vb2_ops saa7134_vbi_qops;
 extern struct video_device saa7134_vbi_template;
 
 int saa7134_vbi_init1(struct saa7134_dev *dev);

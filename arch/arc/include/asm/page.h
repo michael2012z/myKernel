@@ -31,7 +31,11 @@ void clear_user_page(void *to, unsigned long u_vaddr, struct page *page);
  * These are used to make use of C type-checking..
  */
 typedef struct {
+#ifdef CONFIG_ARC_HAS_PAE40
+	unsigned long long pte;
+#else
 	unsigned long pte;
+#endif
 } pte_t;
 typedef struct {
 	unsigned long pgd;
@@ -81,7 +85,7 @@ typedef pte_t * pgtable_t;
  */
 #define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
 
-#define ARCH_PFN_OFFSET		virt_to_pfn(CONFIG_LINUX_LINK_BASE)
+#define ARCH_PFN_OFFSET		virt_to_pfn(CONFIG_LINUX_RAM_BASE)
 
 #ifdef CONFIG_FLATMEM
 #define pfn_valid(pfn)		(((pfn) - ARCH_PFN_OFFSET) < max_mapnr)

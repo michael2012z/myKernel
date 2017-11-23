@@ -451,7 +451,7 @@ static irqreturn_t hmc5843_trigger_handler(int irq, void *p)
 		goto done;
 
 	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
-					   iio_get_time_ns());
+					   iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -597,7 +597,6 @@ static const struct iio_info hmc5843_info = {
 	.read_raw = &hmc5843_read_raw,
 	.write_raw = &hmc5843_write_raw,
 	.write_raw_get_fmt = &hmc5843_write_raw_get_fmt,
-	.driver_module = THIS_MODULE,
 };
 
 static const unsigned long hmc5843_scan_masks[] = {0x7, 0};

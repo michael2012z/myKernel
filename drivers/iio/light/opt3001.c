@@ -585,7 +585,6 @@ err:
 }
 
 static const struct iio_info opt3001_info = {
-	.driver_module = THIS_MODULE,
 	.attrs = &opt3001_attribute_group,
 	.read_raw = opt3001_read_raw,
 	.write_raw = opt3001_write_raw,
@@ -713,13 +712,13 @@ static irqreturn_t opt3001_irq(int irq, void *_iio)
 					IIO_UNMOD_EVENT_CODE(IIO_LIGHT, 0,
 							IIO_EV_TYPE_THRESH,
 							IIO_EV_DIR_RISING),
-					iio_get_time_ns());
+					iio_get_time_ns(iio));
 		if (ret & OPT3001_CONFIGURATION_FL)
 			iio_push_event(iio,
 					IIO_UNMOD_EVENT_CODE(IIO_LIGHT, 0,
 							IIO_EV_TYPE_THRESH,
 							IIO_EV_DIR_FALLING),
-					iio_get_time_ns());
+					iio_get_time_ns(iio));
 	} else if (ret & OPT3001_CONFIGURATION_CRF) {
 		ret = i2c_smbus_read_word_swapped(opt->client, OPT3001_RESULT);
 		if (ret < 0) {
@@ -840,6 +839,7 @@ static const struct of_device_id opt3001_of_match[] = {
 	{ .compatible = "ti,opt3001" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, opt3001_of_match);
 
 static struct i2c_driver opt3001_driver = {
 	.probe = opt3001_probe,

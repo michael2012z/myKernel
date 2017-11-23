@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -48,9 +45,10 @@
  * @{
  */
 
-#include "../../include/linux/libcfs/libcfs.h"
-#include "../../include/linux/lnet/types.h"
+#include <asm/byteorder.h>
+#include <linux/types.h>
 #include <linux/backing-dev.h>
+#include <linux/libcfs/libcfs.h>
 
 /****************** persistent mount data *********************/
 
@@ -112,14 +110,6 @@ struct lustre_mount_data {
 
 #define lmd_is_client(x) ((x)->lmd_flags & LMD_FLG_CLIENT)
 
-/****************** last_rcvd file *********************/
-
-/** version recovery epoch */
-#define LR_EPOCH_BITS   32
-#define lr_epoch(a) ((a) >> LR_EPOCH_BITS)
-#define LR_EXPIRE_INTERVALS 16 /**< number of intervals to track transno */
-#define ENOENT_VERSION 1 /** 'virtual' version of non-existent object */
-
 /****************** superblock additional info *********************/
 
 struct ll_sb_info;
@@ -130,7 +120,6 @@ struct lustre_sb_info {
 	struct lustre_mount_data *lsi_lmd;     /* mount command info */
 	struct ll_sb_info	*lsi_llsbi;   /* add'l client sbi info */
 	struct dt_device	 *lsi_dt_dev;  /* dt device to access disk fs*/
-	struct vfsmount	  *lsi_srv_mnt; /* the one server mount */
 	atomic_t	      lsi_mounts;  /* references to the srv_mnt */
 	char			  lsi_svname[MTI_NAME_MAXLEN];
 	char			  lsi_osd_obdname[64];
@@ -138,29 +127,14 @@ struct lustre_sb_info {
 	struct obd_export	 *lsi_osd_exp;
 	char			  lsi_osd_type[16];
 	char			  lsi_fstype[16];
-	struct backing_dev_info   lsi_bdi;     /* each client mountpoint needs
-						* own backing_dev_info
-						*/
 };
 
 #define LSI_UMOUNT_FAILOVER	      0x00200000
-#define LSI_BDI_INITIALIZED	      0x00400000
 
 #define     s2lsi(sb)	((struct lustre_sb_info *)((sb)->s_fs_info))
 #define     s2lsi_nocast(sb) ((sb)->s_fs_info)
 
 #define     get_profile_name(sb)   (s2lsi(sb)->lsi_lmd->lmd_profile)
-#define	    get_mount_flags(sb)	   (s2lsi(sb)->lsi_lmd->lmd_flags)
-#define	    get_mntdev_name(sb)	   (s2lsi(sb)->lsi_lmd->lmd_dev)
-
-/****************** mount lookup info *********************/
-
-struct lustre_mount_info {
-	char		 *lmi_name;
-	struct super_block   *lmi_sb;
-	struct vfsmount      *lmi_mnt;
-	struct list_head	    lmi_list_chain;
-};
 
 /****************** prototypes *********************/
 

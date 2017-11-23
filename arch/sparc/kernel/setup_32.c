@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/sparc/kernel/setup.c
  *
@@ -68,8 +69,6 @@ struct screen_info screen_info = {
  * prints out pretty messages and returns.
  */
 
-extern unsigned long trapbase;
-
 /* Pretty sick eh? */
 static void prom_sync_me(void)
 {
@@ -84,7 +83,7 @@ static void prom_sync_me(void)
 			     "nop\n\t" : : "r" (&trapbase));
 
 	prom_printf("PROM SYNC COMMAND...\n");
-	show_free_areas(0);
+	show_free_areas(0, NULL);
 	if (!is_idle_task(current)) {
 		local_irq_enable();
 		sys_sync();
@@ -150,7 +149,7 @@ static void __init boot_flags_init(char *commands)
 {
 	while (*commands) {
 		/* Move to the start of the next "argument". */
-		while (*commands && *commands == ' ')
+		while (*commands == ' ')
 			commands++;
 
 		/* Process any command switches, otherwise skip it. */
@@ -300,7 +299,7 @@ void __init setup_arch(char **cmdline_p)
 	int i;
 	unsigned long highest_paddr;
 
-	sparc_ttable = (struct tt_entry *) &trapbase;
+	sparc_ttable = &trapbase;
 
 	/* Initialize PROM console and command line. */
 	*cmdline_p = prom_getbootargs();

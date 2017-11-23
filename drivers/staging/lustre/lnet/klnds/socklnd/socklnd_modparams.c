@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  *
@@ -139,7 +140,7 @@ module_param(protocol, int, 0644);
 MODULE_PARM_DESC(protocol, "protocol version");
 #endif
 
-ksock_tunables_t ksocknal_tunables;
+struct ksock_tunables ksocknal_tunables;
 
 int ksocknal_tunables_init(void)
 {

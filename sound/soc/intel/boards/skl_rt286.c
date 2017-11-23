@@ -29,9 +29,21 @@
 #include "../../codecs/hdac_hdmi.h"
 
 static struct snd_soc_jack skylake_headset;
+static struct snd_soc_jack skylake_hdmi[3];
+
+struct skl_hdmi_pcm {
+	struct list_head head;
+	struct snd_soc_dai *codec_dai;
+	int device;
+};
+
+struct skl_rt286_private {
+	struct list_head hdmi_pcm_list;
+};
 
 enum {
 	SKL_DPCM_AUDIO_PB = 0,
+	SKL_DPCM_AUDIO_DB_PB,
 	SKL_DPCM_AUDIO_CP,
 	SKL_DPCM_AUDIO_REF_CP,
 	SKL_DPCM_AUDIO_DMIC_CP,
@@ -83,10 +95,6 @@ static const struct snd_soc_dapm_route skylake_rt286_map[] = {
 	/* digital mics */
 	{"DMIC1 Pin", NULL, "DMIC2"},
 	{"DMic", NULL, "SoC DMIC"},
-
-	{"HDMI1", NULL, "hif5 Output"},
-	{"HDMI2", NULL, "hif6 Output"},
-	{"HDMI3", NULL, "hif7 Output"},
 
 	/* CODEC BE connections */
 	{ "AIF1 Playback", NULL, "ssp0 Tx"},
@@ -142,26 +150,37 @@ static int skylake_rt286_codec_init(struct snd_soc_pcm_runtime *rtd)
 
 static int skylake_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 {
+	struct skl_rt286_private *ctx = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *dai = rtd->codec_dai;
+	struct skl_hdmi_pcm *pcm;
 
-	return hdac_hdmi_jack_init(dai, SKL_DPCM_AUDIO_HDMI1_PB + dai->id);
+	pcm = devm_kzalloc(rtd->card->dev, sizeof(*pcm), GFP_KERNEL);
+	if (!pcm)
+		return -ENOMEM;
+
+	pcm->device = SKL_DPCM_AUDIO_HDMI1_PB + dai->id;
+	pcm->codec_dai = dai;
+
+	list_add_tail(&pcm->head, &ctx->hdmi_pcm_list);
+
+	return 0;
 }
 
-static unsigned int rates[] = {
+static const unsigned int rates[] = {
 	48000,
 };
 
-static struct snd_pcm_hw_constraint_list constraints_rates = {
+static const struct snd_pcm_hw_constraint_list constraints_rates = {
 	.count = ARRAY_SIZE(rates),
 	.list  = rates,
 	.mask = 0,
 };
 
-static unsigned int channels[] = {
+static const unsigned int channels[] = {
 	2,
 };
 
-static struct snd_pcm_hw_constraint_list constraints_channels = {
+static const struct snd_pcm_hw_constraint_list constraints_channels = {
 	.count = ARRAY_SIZE(channels),
 	.list = channels,
 	.mask = 0,
@@ -229,7 +248,7 @@ static int skylake_rt286_hw_params(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static struct snd_soc_ops skylake_rt286_ops = {
+static const struct snd_soc_ops skylake_rt286_ops = {
 	.hw_params = skylake_rt286_hw_params,
 };
 
@@ -246,11 +265,11 @@ static int skylake_dmic_fixup(struct snd_soc_pcm_runtime *rtd,
 	return 0;
 }
 
-static unsigned int channels_dmic[] = {
+static const unsigned int channels_dmic[] = {
 	2, 4,
 };
 
-static struct snd_pcm_hw_constraint_list constraints_dmic_channels = {
+static const struct snd_pcm_hw_constraint_list constraints_dmic_channels = {
 	.count = ARRAY_SIZE(channels_dmic),
 	.list = channels_dmic,
 	.mask = 0,
@@ -268,7 +287,7 @@ static int skylake_dmic_startup(struct snd_pcm_substream *substream)
 			SNDRV_PCM_HW_PARAM_RATE, &constraints_rates);
 }
 
-static struct snd_soc_ops skylake_dmic_ops = {
+static const struct snd_soc_ops skylake_dmic_ops = {
 	.startup = skylake_dmic_startup,
 };
 
@@ -291,6 +310,23 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 		},
 		.dpcm_playback = 1,
 		.ops = &skylake_rt286_fe_ops,
+	},
+	[SKL_DPCM_AUDIO_DB_PB] = {
+		.name = "Skl Deepbuffer Port",
+		.stream_name = "Deep Buffer Audio",
+		.cpu_dai_name = "Deepbuffer Pin",
+		.platform_name = "0000:00:1f.3",
+		.nonatomic = 1,
+		.dynamic = 1,
+		.codec_name = "snd-soc-dummy",
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.trigger = {
+			SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST
+		},
+		.dpcm_playback = 1,
+		.ops = &skylake_rt286_fe_ops,
+
 	},
 	[SKL_DPCM_AUDIO_CP] = {
 		.name = "Skl Audio Capture Port",
@@ -317,7 +353,6 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 		.platform_name = "0000:00:1f.3",
 		.init = NULL,
 		.dpcm_capture = 1,
-		.ignore_suspend = 1,
 		.nonatomic = 1,
 		.dynamic = 1,
 	},
@@ -375,7 +410,7 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 	{
 		/* SSP0 - Codec */
 		.name = "SSP0-Codec",
-		.be_id = 0,
+		.id = 0,
 		.cpu_dai_name = "SSP0 Pin",
 		.platform_name = "0000:00:1f.3",
 		.no_pcm = 1,
@@ -393,7 +428,7 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 	},
 	{
 		.name = "dmic01",
-		.be_id = 1,
+		.id = 1,
 		.cpu_dai_name = "DMIC01 Pin",
 		.codec_name = "dmic-codec",
 		.codec_dai_name = "dmic-hifi",
@@ -405,7 +440,7 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 	},
 	{
 		.name = "iDisp1",
-		.be_id = 2,
+		.id = 2,
 		.cpu_dai_name = "iDisp1 Pin",
 		.codec_name = "ehdaudio0D2",
 		.codec_dai_name = "intel-hdmi-hifi1",
@@ -416,7 +451,7 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 	},
 	{
 		.name = "iDisp2",
-		.be_id = 3,
+		.id = 3,
 		.cpu_dai_name = "iDisp2 Pin",
 		.codec_name = "ehdaudio0D2",
 		.codec_dai_name = "intel-hdmi-hifi2",
@@ -427,7 +462,7 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 	},
 	{
 		.name = "iDisp3",
-		.be_id = 4,
+		.id = 4,
 		.cpu_dai_name = "iDisp3 Pin",
 		.codec_name = "ehdaudio0D2",
 		.codec_dai_name = "intel-hdmi-hifi3",
@@ -437,6 +472,40 @@ static struct snd_soc_dai_link skylake_rt286_dais[] = {
 		.no_pcm = 1,
 	},
 };
+
+#define NAME_SIZE	32
+static int skylake_card_late_probe(struct snd_soc_card *card)
+{
+	struct skl_rt286_private *ctx = snd_soc_card_get_drvdata(card);
+	struct skl_hdmi_pcm *pcm;
+	struct snd_soc_codec *codec = NULL;
+	int err, i = 0;
+	char jack_name[NAME_SIZE];
+
+	list_for_each_entry(pcm, &ctx->hdmi_pcm_list, head) {
+		codec = pcm->codec_dai->codec;
+		snprintf(jack_name, sizeof(jack_name),
+			"HDMI/DP, pcm=%d Jack", pcm->device);
+		err = snd_soc_card_jack_new(card, jack_name,
+					SND_JACK_AVOUT, &skylake_hdmi[i],
+					NULL, 0);
+
+		if (err)
+			return err;
+
+		err = hdac_hdmi_jack_init(pcm->codec_dai, pcm->device,
+						&skylake_hdmi[i]);
+		if (err < 0)
+			return err;
+
+		i++;
+	}
+
+	if (!codec)
+		return -EINVAL;
+
+	return hdac_hdmi_jack_port_init(codec, &card->dapm);
+}
 
 /* skylake audio machine driver for SPT + RT286S */
 static struct snd_soc_card skylake_rt286 = {
@@ -451,14 +520,30 @@ static struct snd_soc_card skylake_rt286 = {
 	.dapm_routes = skylake_rt286_map,
 	.num_dapm_routes = ARRAY_SIZE(skylake_rt286_map),
 	.fully_routed = true,
+	.late_probe = skylake_card_late_probe,
 };
 
 static int skylake_audio_probe(struct platform_device *pdev)
 {
+	struct skl_rt286_private *ctx;
+
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_ATOMIC);
+	if (!ctx)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&ctx->hdmi_pcm_list);
+
 	skylake_rt286.dev = &pdev->dev;
+	snd_soc_card_set_drvdata(&skylake_rt286, ctx);
 
 	return devm_snd_soc_register_card(&pdev->dev, &skylake_rt286);
 }
+
+static const struct platform_device_id skl_board_ids[] = {
+	{ .name = "skl_alc286s_i2s" },
+	{ .name = "kbl_alc286s_i2s" },
+	{ }
+};
 
 static struct platform_driver skylake_audio = {
 	.probe = skylake_audio_probe,
@@ -466,6 +551,8 @@ static struct platform_driver skylake_audio = {
 		.name = "skl_alc286s_i2s",
 		.pm = &snd_soc_pm_ops,
 	},
+	.id_table = skl_board_ids,
+
 };
 
 module_platform_driver(skylake_audio)
@@ -475,3 +562,4 @@ MODULE_AUTHOR("Omair Mohammed Abdullah <omair.m.abdullah@intel.com>");
 MODULE_DESCRIPTION("Intel SST Audio for Skylake");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:skl_alc286s_i2s");
+MODULE_ALIAS("platform:kbl_alc286s_i2s");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/fs.h>
 #include <linux/random.h>
 #include <linux/buffer_head.h>
@@ -35,7 +36,7 @@ static void ext4_mmp_csum_set(struct super_block *sb, struct mmp_struct *mmp)
 }
 
 /*
- * Write the MMP block using WRITE_SYNC to try to get the block on-disk
+ * Write the MMP block using REQ_SYNC to try to get the block on-disk
  * faster.
  */
 static int write_mmp_block(struct super_block *sb, struct buffer_head *bh)
@@ -52,7 +53,7 @@ static int write_mmp_block(struct super_block *sb, struct buffer_head *bh)
 	lock_buffer(bh);
 	bh->b_end_io = end_buffer_write_sync;
 	get_bh(bh);
-	submit_bh(WRITE_SYNC | REQ_META | REQ_PRIO, bh);
+	submit_bh(REQ_OP_WRITE, REQ_SYNC | REQ_META | REQ_PRIO, bh);
 	wait_on_buffer(bh);
 	sb_end_write(sb);
 	if (unlikely(!buffer_uptodate(bh)))
@@ -88,7 +89,7 @@ static int read_mmp_block(struct super_block *sb, struct buffer_head **bh,
 	get_bh(*bh);
 	lock_buffer(*bh);
 	(*bh)->b_end_io = end_buffer_read_sync;
-	submit_bh(READ_SYNC | REQ_META | REQ_PRIO, *bh);
+	submit_bh(REQ_OP_READ, REQ_META | REQ_PRIO, *bh);
 	wait_on_buffer(*bh);
 	if (!buffer_uptodate(*bh)) {
 		ret = -EIO;
@@ -121,7 +122,7 @@ void __dump_mmp_msg(struct super_block *sb, struct mmp_struct *mmp,
 	__ext4_warning(sb, function, line, "%s", msg);
 	__ext4_warning(sb, function, line,
 		       "MMP failure info: last update time: %llu, last update "
-		       "node: %s, last update device: %s\n",
+		       "node: %s, last update device: %s",
 		       (long long unsigned int) le64_to_cpu(mmp->mmp_time),
 		       mmp->mmp_nodename, mmp->mmp_bdevname);
 }
@@ -185,7 +186,7 @@ static int kmmpd(void *data)
 			goto exit_thread;
 		}
 
-		if (sb->s_flags & MS_RDONLY) {
+		if (sb_rdonly(sb)) {
 			ext4_warning(sb, "kmmpd being stopped since filesystem "
 				     "has been remounted as readonly.");
 			goto exit_thread;
@@ -353,7 +354,7 @@ skip:
 	 * wait for MMP interval and check mmp_seq.
 	 */
 	if (schedule_timeout_interruptible(HZ * wait_time) != 0) {
-		ext4_warning(sb, "MMP startup interrupted, failing mount\n");
+		ext4_warning(sb, "MMP startup interrupted, failing mount");
 		goto failed;
 	}
 
@@ -367,7 +368,7 @@ skip:
 		goto failed;
 	}
 
-	mmpd_data = kmalloc(sizeof(struct mmpd_data), GFP_KERNEL);
+	mmpd_data = kmalloc(sizeof(*mmpd_data), GFP_KERNEL);
 	if (!mmpd_data) {
 		ext4_warning(sb, "not enough memory for mmpd_data");
 		goto failed;

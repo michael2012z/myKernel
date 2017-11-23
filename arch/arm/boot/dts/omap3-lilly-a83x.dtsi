@@ -17,7 +17,7 @@
 			bootargs = "console=ttyO0,115200n8 vt.global_cursor_default=0 consoleblank=0";
 	};
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		reg = <0x80000000 0x8000000>;   /* 128 MB */
 	};
@@ -257,7 +257,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c3_pins>;
 		gpiom1: gpio@20 {
-			compatible = "mcp,mcp23017";
+			compatible = "microchip,mcp23017";
 			gpio-controller;
 			#gpio-cells = <2>;
 			reg = <0x20>;

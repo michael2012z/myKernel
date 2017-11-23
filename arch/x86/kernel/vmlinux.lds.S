@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ld script for the x86 kernel
  *
@@ -24,6 +25,7 @@
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
 #include <asm/page_types.h>
+#include <asm/orc_lookup.h>
 #include <asm/cache.h>
 #include <asm/boot.h>
 
@@ -91,12 +93,13 @@ SECTIONS
 	/* Text and read-only data */
 	.text :  AT(ADDR(.text) - LOAD_OFFSET) {
 		_text = .;
+		_stext = .;
 		/* bootstrapping code */
 		HEAD_TEXT
 		. = ALIGN(8);
-		_stext = .;
 		TEXT_TEXT
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		ENTRY_TEXT
@@ -145,6 +148,9 @@ SECTIONS
 		_edata = .;
 	} :data
 
+	BUG_TABLE
+
+	ORC_UNWIND_TABLE
 
 	. = ALIGN(PAGE_SIZE);
 	__vvar_page = .;
@@ -334,7 +340,7 @@ SECTIONS
 		__brk_limit = .;
 	}
 
-	. = ALIGN(PAGE_SIZE);
+	. = ALIGN(PAGE_SIZE);		/* keep VO_INIT_SIZE page aligned */
 	_end = .;
 
         STABS_DEBUG
@@ -344,7 +350,6 @@ SECTIONS
 	DISCARDS
 	/DISCARD/ : {
 		*(.eh_frame)
-		*(__func_stack_frame_non_standard)
 	}
 }
 

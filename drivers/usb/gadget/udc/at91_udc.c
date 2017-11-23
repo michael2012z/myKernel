@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * at91_udc -- driver for at91-series USB peripheral controller
  *
  * Copyright (C) 2004 by Thomas Rathbone
  * Copyright (C) 2005 by HP Labs
  * Copyright (C) 2005 by David Brownell
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #undef	VERBOSE_DEBUG
@@ -1726,10 +1722,7 @@ static int at91sam9261_udc_init(struct at91_udc *udc)
 
 	udc->matrix = syscon_regmap_lookup_by_phandle(udc->pdev->dev.of_node,
 						      "atmel,matrix");
-	if (IS_ERR(udc->matrix))
-		return PTR_ERR(udc->matrix);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(udc->matrix);
 }
 
 static void at91sam9261_udc_pullup(struct at91_udc *udc, int is_on)

@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * uartlite.c: Serial driver for Xilinx uartlite serial controller
  *
  * Copyright (C) 2006 Peter Korsgaard <jacmet@sunsite.dk>
  * Copyright (C) 2007 Secret Lab Technologies Ltd.
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
 #include <linux/platform_device.h>
@@ -28,7 +25,7 @@
 #define ULITE_NAME		"ttyUL"
 #define ULITE_MAJOR		204
 #define ULITE_MINOR		187
-#define ULITE_NR_UARTS		16
+#define ULITE_NR_UARTS		CONFIG_SERIAL_UARTLITE_NR_UARTS
 
 /* ---------------------------------------------------------------------
  * Register definitions
@@ -72,7 +69,7 @@ static void uartlite_outbe32(u32 val, void __iomem *addr)
 	iowrite32be(val, addr);
 }
 
-static struct uartlite_reg_ops uartlite_be = {
+static const struct uartlite_reg_ops uartlite_be = {
 	.in = uartlite_inbe32,
 	.out = uartlite_outbe32,
 };
@@ -87,21 +84,21 @@ static void uartlite_outle32(u32 val, void __iomem *addr)
 	iowrite32(val, addr);
 }
 
-static struct uartlite_reg_ops uartlite_le = {
+static const struct uartlite_reg_ops uartlite_le = {
 	.in = uartlite_inle32,
 	.out = uartlite_outle32,
 };
 
 static inline u32 uart_in32(u32 offset, struct uart_port *port)
 {
-	struct uartlite_reg_ops *reg_ops = port->private_data;
+	const struct uartlite_reg_ops *reg_ops = port->private_data;
 
 	return reg_ops->in(port->membase + offset);
 }
 
 static inline void uart_out32(u32 val, u32 offset, struct uart_port *port)
 {
-	struct uartlite_reg_ops *reg_ops = port->private_data;
+	const struct uartlite_reg_ops *reg_ops = port->private_data;
 
 	reg_ops->out(val, port->membase + offset);
 }
@@ -345,13 +342,13 @@ static int ulite_request_port(struct uart_port *port)
 		return -EBUSY;
 	}
 
-	port->private_data = &uartlite_be;
+	port->private_data = (void *)&uartlite_be;
 	ret = uart_in32(ULITE_CONTROL, port);
 	uart_out32(ULITE_CONTROL_RST_TX, ULITE_CONTROL, port);
 	ret = uart_in32(ULITE_STATUS, port);
 	/* Endianess detection */
 	if ((ret & ULITE_STATUS_TXEMPTY) != ULITE_STATUS_TXEMPTY)
-		port->private_data = &uartlite_le;
+		port->private_data = (void *)&uartlite_le;
 
 	return 0;
 }
@@ -387,7 +384,7 @@ static void ulite_put_poll_char(struct uart_port *port, unsigned char ch)
 }
 #endif
 
-static struct uart_ops ulite_ops = {
+static const struct uart_ops ulite_ops = {
 	.tx_empty	= ulite_tx_empty,
 	.set_mctrl	= ulite_set_mctrl,
 	.get_mctrl	= ulite_get_mctrl,
@@ -739,7 +736,7 @@ static int __init ulite_init(void)
 err_plat:
 	uart_unregister_driver(&ulite_uart_driver);
 err_uart:
-	pr_err("registering uartlite driver failed: err=%i", ret);
+	pr_err("registering uartlite driver failed: err=%i\n", ret);
 	return ret;
 }
 

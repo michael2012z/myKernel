@@ -264,7 +264,7 @@ int nvec_write_async(struct nvec_chip *nvec, const unsigned char *data,
 
 	msg = nvec_msg_alloc(nvec, NVEC_MSG_TX);
 
-	if (msg == NULL)
+	if (!msg)
 		return -ENOMEM;
 
 	msg->data[0] = size;
@@ -620,7 +620,7 @@ static irqreturn_t nvec_interrupt(int irq, void *dev)
 		} else {
 			nvec->rx = nvec_msg_alloc(nvec, NVEC_MSG_RX);
 			/* Should not happen in a normal world */
-			if (unlikely(nvec->rx == NULL)) {
+			if (unlikely(!nvec->rx)) {
 				nvec->state = 0;
 				break;
 			}
@@ -659,10 +659,11 @@ static irqreturn_t nvec_interrupt(int irq, void *dev)
 		} else if (nvec->tx && nvec->tx->pos < nvec->tx->size) {
 			to_send = nvec->tx->data[nvec->tx->pos++];
 		} else {
-			dev_err(nvec->dev, "tx buffer underflow on %p (%u > %u)\n",
+			dev_err(nvec->dev,
+				"tx buffer underflow on %p (%u > %u)\n",
 				nvec->tx,
-				(uint) (nvec->tx ? nvec->tx->pos : 0),
-				(uint) (nvec->tx ? nvec->tx->size : 0));
+				(uint)(nvec->tx ? nvec->tx->pos : 0),
+				(uint)(nvec->tx ? nvec->tx->size : 0));
 			nvec->state = 0;
 		}
 		break;
@@ -830,7 +831,7 @@ static int tegra_nvec_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	nvec->rst = devm_reset_control_get(&pdev->dev, "i2c");
+	nvec->rst = devm_reset_control_get_exclusive(&pdev->dev, "i2c");
 	if (IS_ERR(nvec->rst)) {
 		dev_err(nvec->dev, "failed to get controller reset\n");
 		return PTR_ERR(nvec->rst);

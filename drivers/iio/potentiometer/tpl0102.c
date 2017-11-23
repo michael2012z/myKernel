@@ -106,7 +106,6 @@ static int tpl0102_write_raw(struct iio_dev *indio_dev,
 static const struct iio_info tpl0102_info = {
 	.read_raw = tpl0102_read_raw,
 	.write_raw = tpl0102_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int tpl0102_probe(struct i2c_client *client,
@@ -115,10 +114,6 @@ static int tpl0102_probe(struct i2c_client *client,
 	struct device *dev = &client->dev;
 	struct tpl0102_data *data;
 	struct iio_dev *indio_dev;
-
-	if (!i2c_check_functionality(client->adapter,
-				     I2C_FUNC_SMBUS_WORD_DATA))
-		return -ENOTSUPP;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*data));
 	if (!indio_dev)

@@ -7,10 +7,12 @@
 #include <linux/bpf.h>
 #include <linux/jhash.h>
 #include <linux/filter.h>
-#include <linux/vmalloc.h>
 #include <linux/stacktrace.h>
 #include <linux/perf_event.h>
 #include "percpu_freelist.h"
+
+#define STACK_CREATE_FLAG_MASK \
+	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY)
 
 struct stack_map_bucket {
 	struct pcpu_freelist_node fnode;
@@ -32,7 +34,8 @@ static int prealloc_elems_and_freelist(struct bpf_stack_map *smap)
 	u32 elem_size = sizeof(struct stack_map_bucket) + smap->map.value_size;
 	int err;
 
-	smap->elems = vzalloc(elem_size * smap->map.max_entries);
+	smap->elems = bpf_map_area_alloc(elem_size * smap->map.max_entries,
+					 smap->map.numa_node);
 	if (!smap->elems)
 		return -ENOMEM;
 
@@ -45,7 +48,7 @@ static int prealloc_elems_and_freelist(struct bpf_stack_map *smap)
 	return 0;
 
 free_elems:
-	vfree(smap->elems);
+	bpf_map_area_free(smap->elems);
 	return err;
 }
 
@@ -60,13 +63,13 @@ static struct bpf_map *stack_map_alloc(union bpf_attr *attr)
 	if (!capable(CAP_SYS_ADMIN))
 		return ERR_PTR(-EPERM);
 
-	if (attr->map_flags)
+	if (attr->map_flags & ~STACK_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
 	/* check sanity of attributes */
 	if (attr->max_entries == 0 || attr->key_size != 4 ||
 	    value_size < 8 || value_size % 8 ||
-	    value_size / 8 > PERF_MAX_STACK_DEPTH)
+	    value_size / 8 > sysctl_perf_event_max_stack)
 		return ERR_PTR(-EINVAL);
 
 	/* hash table size must be power of 2 */
@@ -76,12 +79,9 @@ static struct bpf_map *stack_map_alloc(union bpf_attr *attr)
 	if (cost >= U32_MAX - PAGE_SIZE)
 		return ERR_PTR(-E2BIG);
 
-	smap = kzalloc(cost, GFP_USER | __GFP_NOWARN);
-	if (!smap) {
-		smap = vzalloc(cost);
-		if (!smap)
-			return ERR_PTR(-ENOMEM);
-	}
+	smap = bpf_map_area_alloc(cost, bpf_map_attr_numa_node(attr));
+	if (!smap)
+		return ERR_PTR(-ENOMEM);
 
 	err = -E2BIG;
 	cost += n_buckets * (value_size + sizeof(struct stack_map_bucket));
@@ -92,14 +92,16 @@ static struct bpf_map *stack_map_alloc(union bpf_attr *attr)
 	smap->map.key_size = attr->key_size;
 	smap->map.value_size = value_size;
 	smap->map.max_entries = attr->max_entries;
+	smap->map.map_flags = attr->map_flags;
 	smap->n_buckets = n_buckets;
 	smap->map.pages = round_up(cost, PAGE_SIZE) >> PAGE_SHIFT;
+	smap->map.numa_node = bpf_map_attr_numa_node(attr);
 
 	err = bpf_map_precharge_memlock(smap->map.pages);
 	if (err)
 		goto free_smap;
 
-	err = get_callchain_buffers();
+	err = get_callchain_buffers(sysctl_perf_event_max_stack);
 	if (err)
 		goto free_smap;
 
@@ -112,20 +114,19 @@ static struct bpf_map *stack_map_alloc(union bpf_attr *attr)
 put_buffers:
 	put_callchain_buffers();
 free_smap:
-	kvfree(smap);
+	bpf_map_area_free(smap);
 	return ERR_PTR(err);
 }
 
-static u64 bpf_get_stackid(u64 r1, u64 r2, u64 flags, u64 r4, u64 r5)
+BPF_CALL_3(bpf_get_stackid, struct pt_regs *, regs, struct bpf_map *, map,
+	   u64, flags)
 {
-	struct pt_regs *regs = (struct pt_regs *) (long) r1;
-	struct bpf_map *map = (struct bpf_map *) (long) r2;
 	struct bpf_stack_map *smap = container_of(map, struct bpf_stack_map, map);
 	struct perf_callchain_entry *trace;
 	struct stack_map_bucket *bucket, *new_bucket, *old_bucket;
 	u32 max_depth = map->value_size / 8;
-	/* stack_map_alloc() checks that max_depth <= PERF_MAX_STACK_DEPTH */
-	u32 init_nr = PERF_MAX_STACK_DEPTH - max_depth;
+	/* stack_map_alloc() checks that max_depth <= sysctl_perf_event_max_stack */
+	u32 init_nr = sysctl_perf_event_max_stack - max_depth;
 	u32 skip = flags & BPF_F_SKIP_FIELD_MASK;
 	u32 hash, id, trace_nr, trace_len;
 	bool user = flags & BPF_F_USER_STACK;
@@ -136,14 +137,15 @@ static u64 bpf_get_stackid(u64 r1, u64 r2, u64 flags, u64 r4, u64 r5)
 			       BPF_F_FAST_STACK_CMP | BPF_F_REUSE_STACKID)))
 		return -EINVAL;
 
-	trace = get_perf_callchain(regs, init_nr, kernel, user, false, false);
+	trace = get_perf_callchain(regs, init_nr, kernel, user,
+				   sysctl_perf_event_max_stack, false, false);
 
 	if (unlikely(!trace))
 		/* couldn't fetch the stack trace */
 		return -EFAULT;
 
 	/* get_perf_callchain() guarantees that trace->nr >= init_nr
-	 * and trace-nr <= PERF_MAX_STACK_DEPTH, so trace_nr <= max_depth
+	 * and trace-nr <= sysctl_perf_event_max_stack, so trace_nr <= max_depth
 	 */
 	trace_nr = trace->nr - init_nr;
 
@@ -262,13 +264,13 @@ static void stack_map_free(struct bpf_map *map)
 	/* wait for bpf programs to complete before freeing stack map */
 	synchronize_rcu();
 
-	vfree(smap->elems);
+	bpf_map_area_free(smap->elems);
 	pcpu_freelist_destroy(&smap->freelist);
-	kvfree(smap);
+	bpf_map_area_free(smap);
 	put_callchain_buffers();
 }
 
-static const struct bpf_map_ops stack_map_ops = {
+const struct bpf_map_ops stack_map_ops = {
 	.map_alloc = stack_map_alloc,
 	.map_free = stack_map_free,
 	.map_get_next_key = stack_map_get_next_key,
@@ -276,15 +278,3 @@ static const struct bpf_map_ops stack_map_ops = {
 	.map_update_elem = stack_map_update_elem,
 	.map_delete_elem = stack_map_delete_elem,
 };
-
-static struct bpf_map_type_list stack_map_type __read_mostly = {
-	.ops = &stack_map_ops,
-	.type = BPF_MAP_TYPE_STACK_TRACE,
-};
-
-static int __init register_stack_map(void)
-{
-	bpf_register_map_type(&stack_map_type);
-	return 0;
-}
-late_initcall(register_stack_map);

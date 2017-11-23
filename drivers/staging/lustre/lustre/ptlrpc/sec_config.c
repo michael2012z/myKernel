@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -36,15 +33,16 @@
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 #include <linux/crypto.h>
 #include <linux/key.h>
 
-#include "../include/obd.h"
-#include "../include/obd_support.h"
-#include "../include/lustre_import.h"
-#include "../include/lustre_param.h"
-#include "../include/lustre_sec.h"
+#include <obd.h>
+#include <obd_class.h>
+#include <obd_support.h>
+#include <lustre_import.h>
+#include <uapi/linux/lustre/lustre_param.h>
+#include <lustre_sec.h>
 
 #include "ptlrpc_internal.h"
 
@@ -62,7 +60,6 @@ enum lustre_sec_part sptlrpc_target_sec_part(struct obd_device *obd)
 	CERROR("unknown target %p(%s)\n", obd, type);
 	return LUSTRE_SP_ANY;
 }
-EXPORT_SYMBOL(sptlrpc_target_sec_part);
 
 /****************************************
  * user supplied flavor string parsing  *
@@ -648,7 +645,7 @@ static int logname2fsname(const char *logname, char *buf, int buflen)
 		return -EINVAL;
 	}
 
-	len = min((int) (ptr - logname), buflen - 1);
+	len = min((int)(ptr - logname), buflen - 1);
 
 	memcpy(buf, logname, len);
 	buf[len] = '\0';
@@ -819,7 +816,7 @@ void sptlrpc_conf_client_adapt(struct obd_device *obd)
 	CDEBUG(D_SEC, "obd %s\n", obd->u.cli.cl_target_uuid.uuid);
 
 	/* serialize with connect/disconnect import */
-	down_read(&obd->u.cli.cl_sem);
+	down_read_nested(&obd->u.cli.cl_sem, OBD_CLI_SEM_MDCOSC);
 
 	imp = obd->u.cli.cl_import;
 	if (imp) {

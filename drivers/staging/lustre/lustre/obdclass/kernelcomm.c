@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -42,8 +39,8 @@
 #define DEBUG_SUBSYSTEM S_CLASS
 #define D_KUC D_OTHER
 
-#include "../include/obd_support.h"
-#include "../include/lustre_kernelcomm.h"
+#include <obd_support.h>
+#include <lustre_kernelcomm.h>
 
 /**
  * libcfs_kkuc_msg_put - send an message from kernel to userspace
@@ -56,7 +53,6 @@ int libcfs_kkuc_msg_put(struct file *filp, void *payload)
 	struct kuc_hdr *kuch = (struct kuc_hdr *)payload;
 	ssize_t count = kuch->kuc_msglen;
 	loff_t offset = 0;
-	mm_segment_t fs;
 	int rc = -ENXIO;
 
 	if (IS_ERR_OR_NULL(filp))
@@ -67,18 +63,14 @@ int libcfs_kkuc_msg_put(struct file *filp, void *payload)
 		return rc;
 	}
 
-	fs = get_fs();
-	set_fs(KERNEL_DS);
 	while (count > 0) {
-		rc = vfs_write(filp, (void __force __user *)payload,
-			       count, &offset);
+		rc = kernel_write(filp, payload, count, &offset);
 		if (rc < 0)
 			break;
 		count -= rc;
 		payload += rc;
 		rc = 0;
 	}
-	set_fs(fs);
 
 	if (rc < 0)
 		CWARN("message send failed (%d)\n", rc);

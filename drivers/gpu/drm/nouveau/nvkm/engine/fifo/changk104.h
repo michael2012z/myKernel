@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __GK104_FIFO_CHAN_H__
 #define __GK104_FIFO_CHAN_H__
 #define gk104_fifo_chan(p) container_of((p), struct gk104_fifo_chan, base)
@@ -12,12 +13,9 @@ struct gk104_fifo_chan {
 	struct list_head head;
 	bool killed;
 
-	struct nvkm_gpuobj *pgd;
-	struct nvkm_vm *vm;
-
 	struct {
 		struct nvkm_gpuobj *inst;
-		struct nvkm_vma vma;
+		struct nvkm_vma *vma;
 	} engn[NVKM_SUBDEV_NR];
 };
 
@@ -27,4 +25,5 @@ int gk104_fifo_gpfifo_new(struct nvkm_fifo *, const struct nvkm_oclass *,
 extern const struct nvkm_fifo_chan_oclass gk104_fifo_gpfifo_oclass;
 extern const struct nvkm_fifo_chan_oclass gk110_fifo_gpfifo_oclass;
 extern const struct nvkm_fifo_chan_oclass gm200_fifo_gpfifo_oclass;
+extern const struct nvkm_fifo_chan_oclass gp100_fifo_gpfifo_oclass;
 #endif

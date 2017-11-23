@@ -71,7 +71,7 @@
 
 #define IWL_MVM_TEMP_NOTIF_WAIT_TIMEOUT	HZ
 
-static void iwl_mvm_enter_ctkill(struct iwl_mvm *mvm)
+void iwl_mvm_enter_ctkill(struct iwl_mvm *mvm)
 {
 	struct iwl_mvm_tt_mgmt *tt = &mvm->thermal_throttle;
 	u32 duration = tt->params.ct_kill_duration;
@@ -204,20 +204,11 @@ void iwl_mvm_temp_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
 	if (WARN_ON(ths_crossed >= IWL_MAX_DTS_TRIPS))
 		return;
 
-	/*
-	 * We are now handling a temperature notification from the firmware
-	 * in ASYNC and hold the mutex. thermal_notify_framework will call
-	 * us back through get_temp() which ought to send a SYNC command to
-	 * the firmware and hence to take the mutex.
-	 * Avoid the deadlock by unlocking the mutex here.
-	 */
 	if (mvm->tz_device.tzone) {
 		struct iwl_mvm_thermal_device *tz_dev = &mvm->tz_device;
 
-		mutex_unlock(&mvm->mutex);
 		thermal_notify_framework(tz_dev->tzone,
 					 tz_dev->fw_trips_index[ths_crossed]);
-		mutex_lock(&mvm->mutex);
 	}
 #endif /* CONFIG_THERMAL */
 }
@@ -250,11 +241,8 @@ static int iwl_mvm_get_temp_cmd(struct iwl_mvm *mvm)
 	};
 	u32 cmdid;
 
-	if (fw_has_api(&mvm->fw->ucode_capa, IWL_UCODE_TLV_API_WIDE_CMD_HDR))
-		cmdid = iwl_cmd_id(CMD_DTS_MEASUREMENT_TRIGGER_WIDE,
-				   PHY_OPS_GROUP, 0);
-	else
-		cmdid = CMD_DTS_MEASUREMENT_TRIGGER;
+	cmdid = iwl_cmd_id(CMD_DTS_MEASUREMENT_TRIGGER_WIDE,
+			   PHY_OPS_GROUP, 0);
 
 	if (!fw_has_capa(&mvm->fw->ucode_capa,
 			 IWL_UCODE_TLV_CAPA_EXTENDED_DTS_MEASURE))
@@ -269,9 +257,6 @@ int iwl_mvm_get_temp(struct iwl_mvm *mvm, s32 *temp)
 	static u16 temp_notif[] = { WIDE_ID(PHY_OPS_GROUP,
 					    DTS_MEASUREMENT_NOTIF_WIDE) };
 	int ret;
-
-	if (!fw_has_api(&mvm->fw->ucode_capa, IWL_UCODE_TLV_API_WIDE_CMD_HDR))
-		temp_notif[0] = DTS_MEASUREMENT_NOTIFICATION;
 
 	lockdep_assert_held(&mvm->mutex);
 
@@ -368,16 +353,14 @@ static void iwl_mvm_tt_smps_iterator(void *_data, u8 *mac,
 
 static void iwl_mvm_tt_tx_protection(struct iwl_mvm *mvm, bool enable)
 {
-	struct ieee80211_sta *sta;
 	struct iwl_mvm_sta *mvmsta;
 	int i, err;
 
-	for (i = 0; i < IWL_MVM_STATION_COUNT; i++) {
-		sta = rcu_dereference_protected(mvm->fw_id_to_mac_id[i],
-						lockdep_is_held(&mvm->mutex));
-		if (IS_ERR_OR_NULL(sta))
+	for (i = 0; i < ARRAY_SIZE(mvm->fw_id_to_mac_id); i++) {
+		mvmsta = iwl_mvm_sta_from_staid_protected(mvm, i);
+		if (!mvmsta)
 			continue;
-		mvmsta = iwl_mvm_sta_from_mac80211(sta);
+
 		if (enable == mvmsta->tt_tx_protection)
 			continue;
 		err = iwl_mvm_tx_protection(mvm, mvmsta, enable);
@@ -546,6 +529,7 @@ int iwl_mvm_ctdp_command(struct iwl_mvm *mvm, u32 op, u32 state)
 
 	lockdep_assert_held(&mvm->mutex);
 
+	status = 0;
 	ret = iwl_mvm_send_cmd_pdu_status(mvm, WIDE_ID(PHY_OPS_GROUP,
 						       CTDP_CONFIG_CMD),
 					  sizeof(cmd), &cmd, &status);
@@ -645,8 +629,9 @@ static int iwl_mvm_tzone_get_temp(struct thermal_zone_device *device,
 
 	mutex_lock(&mvm->mutex);
 
-	if (!mvm->ucode_loaded || !(mvm->cur_ucode == IWL_UCODE_REGULAR)) {
-		ret = -EIO;
+	if (!iwl_mvm_firmware_running(mvm) ||
+	    mvm->fwrt.cur_fw_img != IWL_UCODE_REGULAR) {
+		ret = -ENODATA;
 		goto out;
 	}
 
@@ -695,7 +680,8 @@ static int iwl_mvm_tzone_set_trip_temp(struct thermal_zone_device *device,
 
 	mutex_lock(&mvm->mutex);
 
-	if (!mvm->ucode_loaded || !(mvm->cur_ucode == IWL_UCODE_REGULAR)) {
+	if (!iwl_mvm_firmware_running(mvm) ||
+	    mvm->fwrt.cur_fw_img != IWL_UCODE_REGULAR) {
 		ret = -EIO;
 		goto out;
 	}
@@ -796,9 +782,6 @@ static int iwl_mvm_tcool_get_cur_state(struct thermal_cooling_device *cdev,
 {
 	struct iwl_mvm *mvm = (struct iwl_mvm *)(cdev->devdata);
 
-	if (test_bit(IWL_MVM_STATUS_IN_D0I3, &mvm->status))
-		return -EBUSY;
-
 	*state = mvm->cooling_dev.cur_state;
 
 	return 0;
@@ -810,13 +793,13 @@ static int iwl_mvm_tcool_set_cur_state(struct thermal_cooling_device *cdev,
 	struct iwl_mvm *mvm = (struct iwl_mvm *)(cdev->devdata);
 	int ret;
 
-	if (!mvm->ucode_loaded || !(mvm->cur_ucode == IWL_UCODE_REGULAR))
-		return -EIO;
-
-	if (test_bit(IWL_MVM_STATUS_IN_D0I3, &mvm->status))
-		return -EBUSY;
-
 	mutex_lock(&mvm->mutex);
+
+	if (!iwl_mvm_firmware_running(mvm) ||
+	    mvm->fwrt.cur_fw_img != IWL_UCODE_REGULAR) {
+		ret = -EIO;
+		goto unlock;
+	}
 
 	if (new_state >= ARRAY_SIZE(iwl_mvm_cdev_budgets)) {
 		ret = -EINVAL;
@@ -831,7 +814,7 @@ unlock:
 	return ret;
 }
 
-static struct thermal_cooling_device_ops tcooling_ops = {
+static const struct thermal_cooling_device_ops tcooling_ops = {
 	.get_max_state = iwl_mvm_tcool_get_max_state,
 	.get_cur_state = iwl_mvm_tcool_get_cur_state,
 	.set_cur_state = iwl_mvm_tcool_set_cur_state,
@@ -866,8 +849,10 @@ static void iwl_mvm_thermal_zone_unregister(struct iwl_mvm *mvm)
 		return;
 
 	IWL_DEBUG_TEMP(mvm, "Thermal zone device unregister\n");
-	thermal_zone_device_unregister(mvm->tz_device.tzone);
-	mvm->tz_device.tzone = NULL;
+	if (mvm->tz_device.tzone) {
+		thermal_zone_device_unregister(mvm->tz_device.tzone);
+		mvm->tz_device.tzone = NULL;
+	}
 }
 
 static void iwl_mvm_cooling_device_unregister(struct iwl_mvm *mvm)
@@ -876,8 +861,10 @@ static void iwl_mvm_cooling_device_unregister(struct iwl_mvm *mvm)
 		return;
 
 	IWL_DEBUG_TEMP(mvm, "Cooling device unregister\n");
-	thermal_cooling_device_unregister(mvm->cooling_dev.cdev);
-	mvm->cooling_dev.cdev = NULL;
+	if (mvm->cooling_dev.cdev) {
+		thermal_cooling_device_unregister(mvm->cooling_dev.cdev);
+		mvm->cooling_dev.cdev = NULL;
+	}
 }
 #endif /* CONFIG_THERMAL */
 
@@ -901,10 +888,14 @@ void iwl_mvm_thermal_initialize(struct iwl_mvm *mvm, u32 min_backoff)
 	iwl_mvm_cooling_device_register(mvm);
 	iwl_mvm_thermal_zone_register(mvm);
 #endif
+	mvm->init_status |= IWL_MVM_INIT_STATUS_THERMAL_INIT_COMPLETE;
 }
 
 void iwl_mvm_thermal_exit(struct iwl_mvm *mvm)
 {
+	if (!(mvm->init_status & IWL_MVM_INIT_STATUS_THERMAL_INIT_COMPLETE))
+		return;
+
 	cancel_delayed_work_sync(&mvm->thermal_throttle.ct_kill_exit);
 	IWL_DEBUG_TEMP(mvm, "Exit Thermal Throttling\n");
 
@@ -912,4 +903,5 @@ void iwl_mvm_thermal_exit(struct iwl_mvm *mvm)
 	iwl_mvm_cooling_device_unregister(mvm);
 	iwl_mvm_thermal_zone_unregister(mvm);
 #endif
+	mvm->init_status &= ~IWL_MVM_INIT_STATUS_THERMAL_INIT_COMPLETE;
 }

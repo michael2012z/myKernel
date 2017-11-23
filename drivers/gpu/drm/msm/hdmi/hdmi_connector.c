@@ -112,6 +112,9 @@ static int gpio_config(struct hdmi *hdmi, bool on)
 		for (i = 0; i < HDMI_MAX_NUM_GPIO; i++) {
 			struct hdmi_gpio_data gpio = config->gpios[i];
 
+			if (gpio.num == -1)
+				continue;
+
 			if (gpio.output) {
 				int value = gpio.value ? 0 : 1;
 
@@ -126,10 +129,42 @@ static int gpio_config(struct hdmi *hdmi, bool on)
 
 	return 0;
 err:
-	while (i--)
-		gpio_free(config->gpios[i].num);
+	while (i--) {
+		if (config->gpios[i].num != -1)
+			gpio_free(config->gpios[i].num);
+	}
 
 	return ret;
+}
+
+static void enable_hpd_clocks(struct hdmi *hdmi, bool enable)
+{
+	const struct hdmi_platform_config *config = hdmi->config;
+	struct device *dev = &hdmi->pdev->dev;
+	int i, ret;
+
+	if (enable) {
+		for (i = 0; i < config->hpd_clk_cnt; i++) {
+			if (config->hpd_freq && config->hpd_freq[i]) {
+				ret = clk_set_rate(hdmi->hpd_clks[i],
+						   config->hpd_freq[i]);
+				if (ret)
+					dev_warn(dev,
+						 "failed to set clk %s (%d)\n",
+						 config->hpd_clk_names[i], ret);
+			}
+
+			ret = clk_prepare_enable(hdmi->hpd_clks[i]);
+			if (ret) {
+				dev_err(dev,
+					"failed to enable hpd clk: %s (%d)\n",
+					config->hpd_clk_names[i], ret);
+			}
+		}
+	} else {
+		for (i = config->hpd_clk_cnt - 1; i >= 0; i--)
+			clk_disable_unprepare(hdmi->hpd_clks[i]);
+	}
 }
 
 static int hpd_enable(struct hdmi_connector *hdmi_connector)
@@ -162,22 +197,8 @@ static int hpd_enable(struct hdmi_connector *hdmi_connector)
 		goto fail;
 	}
 
-	for (i = 0; i < config->hpd_clk_cnt; i++) {
-		if (config->hpd_freq && config->hpd_freq[i]) {
-			ret = clk_set_rate(hdmi->hpd_clks[i],
-					config->hpd_freq[i]);
-			if (ret)
-				dev_warn(dev, "failed to set clk %s (%d)\n",
-						config->hpd_clk_names[i], ret);
-		}
-
-		ret = clk_prepare_enable(hdmi->hpd_clks[i]);
-		if (ret) {
-			dev_err(dev, "failed to enable hpd clk: %s (%d)\n",
-					config->hpd_clk_names[i], ret);
-			goto fail;
-		}
-	}
+	pm_runtime_get_sync(dev);
+	enable_hpd_clocks(hdmi, true);
 
 	msm_hdmi_set_mode(hdmi, false);
 	msm_hdmi_phy_reset(hdmi);
@@ -220,8 +241,8 @@ static void hdp_disable(struct hdmi_connector *hdmi_connector)
 
 	msm_hdmi_set_mode(hdmi, false);
 
-	for (i = 0; i < config->hpd_clk_cnt; i++)
-		clk_disable_unprepare(hdmi->hpd_clks[i]);
+	enable_hpd_clocks(hdmi, false);
+	pm_runtime_put_autosuspend(dev);
 
 	ret = gpio_config(hdmi, false);
 	if (ret)
@@ -280,7 +301,16 @@ void msm_hdmi_connector_irq(struct drm_connector *connector)
 
 static enum drm_connector_status detect_reg(struct hdmi *hdmi)
 {
-	uint32_t hpd_int_status = hdmi_read(hdmi, REG_HDMI_HPD_INT_STATUS);
+	uint32_t hpd_int_status;
+
+	pm_runtime_get_sync(&hdmi->pdev->dev);
+	enable_hpd_clocks(hdmi, true);
+
+	hpd_int_status = hdmi_read(hdmi, REG_HDMI_HPD_INT_STATUS);
+
+	enable_hpd_clocks(hdmi, false);
+	pm_runtime_put_autosuspend(&hdmi->pdev->dev);
+
 	return (hpd_int_status & HDMI_HPD_INT_STATUS_CABLE_DETECTED) ?
 			connector_status_connected : connector_status_disconnected;
 }
@@ -341,7 +371,6 @@ static void hdmi_connector_destroy(struct drm_connector *connector)
 
 	hdp_disable(hdmi_connector);
 
-	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
 
 	kfree(hdmi_connector);
@@ -402,15 +431,7 @@ static int msm_hdmi_connector_mode_valid(struct drm_connector *connector,
 	return 0;
 }
 
-static struct drm_encoder *
-msm_hdmi_connector_best_encoder(struct drm_connector *connector)
-{
-	struct hdmi_connector *hdmi_connector = to_hdmi_connector(connector);
-	return hdmi_connector->hdmi->encoder;
-}
-
 static const struct drm_connector_funcs hdmi_connector_funcs = {
-	.dpms = drm_atomic_helper_connector_dpms,
 	.detect = hdmi_connector_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = hdmi_connector_destroy,
@@ -422,7 +443,6 @@ static const struct drm_connector_funcs hdmi_connector_funcs = {
 static const struct drm_connector_helper_funcs msm_hdmi_connector_helper_funcs = {
 	.get_modes = msm_hdmi_connector_get_modes,
 	.mode_valid = msm_hdmi_connector_mode_valid,
-	.best_encoder = msm_hdmi_connector_best_encoder,
 };
 
 /* initialize connector */
@@ -433,10 +453,8 @@ struct drm_connector *msm_hdmi_connector_init(struct hdmi *hdmi)
 	int ret;
 
 	hdmi_connector = kzalloc(sizeof(*hdmi_connector), GFP_KERNEL);
-	if (!hdmi_connector) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	if (!hdmi_connector)
+		return ERR_PTR(-ENOMEM);
 
 	hdmi_connector->hdmi = hdmi;
 	INIT_WORK(&hdmi_connector->hpd_work, msm_hdmi_hotplug_work);
@@ -453,21 +471,13 @@ struct drm_connector *msm_hdmi_connector_init(struct hdmi *hdmi)
 	connector->interlace_allowed = 0;
 	connector->doublescan_allowed = 0;
 
-	drm_connector_register(connector);
-
 	ret = hpd_enable(hdmi_connector);
 	if (ret) {
 		dev_err(&hdmi->pdev->dev, "failed to enable HPD: %d\n", ret);
-		goto fail;
+		return ERR_PTR(ret);
 	}
 
 	drm_mode_connector_attach_encoder(connector, hdmi->encoder);
 
 	return connector;
-
-fail:
-	if (connector)
-		hdmi_connector_destroy(connector);
-
-	return ERR_PTR(ret);
 }

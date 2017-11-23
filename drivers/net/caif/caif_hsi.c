@@ -426,7 +426,6 @@ static int cfhsi_rx_desc(struct cfhsi_desc *desc, struct cfhsi *cfhsi)
 	/* Check for embedded CAIF frame. */
 	if (desc->offset) {
 		struct sk_buff *skb;
-		u8 *dst = NULL;
 		int len = 0;
 		pfrm = ((u8 *)desc) + desc->offset;
 
@@ -454,8 +453,7 @@ static int cfhsi_rx_desc(struct cfhsi_desc *desc, struct cfhsi *cfhsi)
 		}
 		caif_assert(skb != NULL);
 
-		dst = skb_put(skb, len);
-		memcpy(dst, pfrm, len);
+		skb_put_data(skb, pfrm, len);
 
 		skb->protocol = htons(ETH_P_CAIF);
 		skb_reset_mac_header(skb);
@@ -556,7 +554,6 @@ static int cfhsi_rx_pld(struct cfhsi_desc *desc, struct cfhsi *cfhsi)
 	/* Parse payload. */
 	while (nfrms < CFHSI_MAX_PKTS && *plen) {
 		struct sk_buff *skb;
-		u8 *dst = NULL;
 		u8 *pcffrm = NULL;
 		int len;
 
@@ -585,8 +582,7 @@ static int cfhsi_rx_pld(struct cfhsi_desc *desc, struct cfhsi *cfhsi)
 		}
 		caif_assert(skb != NULL);
 
-		dst = skb_put(skb, len);
-		memcpy(dst, pcffrm, len);
+		skb_put_data(skb, pcffrm, len);
 
 		skb->protocol = htons(ETH_P_CAIF);
 		skb_reset_mac_header(skb);
@@ -1121,7 +1117,7 @@ static void cfhsi_setup(struct net_device *dev)
 	dev->flags = IFF_POINTOPOINT | IFF_NOARP;
 	dev->mtu = CFHSI_MAX_CAIF_FRAME_SZ;
 	dev->priv_flags |= IFF_NO_QUEUE;
-	dev->destructor = free_netdev;
+	dev->needs_free_netdev = true;
 	dev->netdev_ops = &cfhsi_netdevops;
 	for (i = 0; i < CFHSI_PRIO_LAST; ++i)
 		skb_queue_head_init(&cfhsi->qhead[i]);
@@ -1201,7 +1197,7 @@ static int cfhsi_open(struct net_device *ndev)
 	clear_bit(CFHSI_AWAKE, &cfhsi->bits);
 
 	/* Create work thread. */
-	cfhsi->wq = create_singlethread_workqueue(cfhsi->ndev->name);
+	cfhsi->wq = alloc_ordered_workqueue(cfhsi->ndev->name, WQ_MEM_RECLAIM);
 	if (!cfhsi->wq) {
 		netdev_err(cfhsi->ndev, "%s: Failed to create work queue.\n",
 			__func__);
@@ -1215,17 +1211,14 @@ static int cfhsi_open(struct net_device *ndev)
 	init_waitqueue_head(&cfhsi->flush_fifo_wait);
 
 	/* Setup the inactivity timer. */
-	init_timer(&cfhsi->inactivity_timer);
-	cfhsi->inactivity_timer.data = (unsigned long)cfhsi;
-	cfhsi->inactivity_timer.function = cfhsi_inactivity_tout;
+	setup_timer(&cfhsi->inactivity_timer, cfhsi_inactivity_tout,
+		    (unsigned long)cfhsi);
 	/* Setup the slowpath RX timer. */
-	init_timer(&cfhsi->rx_slowpath_timer);
-	cfhsi->rx_slowpath_timer.data = (unsigned long)cfhsi;
-	cfhsi->rx_slowpath_timer.function = cfhsi_rx_slowpath;
+	setup_timer(&cfhsi->rx_slowpath_timer, cfhsi_rx_slowpath,
+		    (unsigned long)cfhsi);
 	/* Setup the aggregation timer. */
-	init_timer(&cfhsi->aggregation_timer);
-	cfhsi->aggregation_timer.data = (unsigned long)cfhsi;
-	cfhsi->aggregation_timer.function = cfhsi_aggregation_tout;
+	setup_timer(&cfhsi->aggregation_timer, cfhsi_aggregation_tout,
+		    (unsigned long)cfhsi);
 
 	/* Activate HSI interface. */
 	res = cfhsi->ops->cfhsi_up(cfhsi->ops);
@@ -1266,9 +1259,6 @@ static int cfhsi_close(struct net_device *ndev)
 
 	/* going to shutdown driver */
 	set_bit(CFHSI_SHUTDOWN, &cfhsi->bits);
-
-	/* Flush workqueue */
-	flush_workqueue(cfhsi->wq);
 
 	/* Delete timers if pending */
 	del_timer_sync(&cfhsi->inactivity_timer);
@@ -1359,7 +1349,8 @@ static void cfhsi_netlink_parms(struct nlattr *data[], struct cfhsi *cfhsi)
 }
 
 static int caif_hsi_changelink(struct net_device *dev, struct nlattr *tb[],
-				struct nlattr *data[])
+			       struct nlattr *data[],
+			       struct netlink_ext_ack *extack)
 {
 	cfhsi_netlink_parms(data, netdev_priv(dev));
 	netdev_state_change(dev);
@@ -1406,7 +1397,8 @@ static int caif_hsi_fill_info(struct sk_buff *skb, const struct net_device *dev)
 }
 
 static int caif_hsi_newlink(struct net *src_net, struct net_device *dev,
-			  struct nlattr *tb[], struct nlattr *data[])
+			    struct nlattr *tb[], struct nlattr *data[],
+			    struct netlink_ext_ack *extack)
 {
 	struct cfhsi *cfhsi = NULL;
 	struct cfhsi_ops *(*get_ops)(void);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * omap_udc.c -- for OMAP full speed udc; most chips support OTG.
  *
@@ -5,11 +6,6 @@
  * Copyright (C) 2004-2005 David Brownell
  *
  * OMAP2 & DMA support by Kyungmin Park <kyungmin.park@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #undef	DEBUG
@@ -1112,7 +1108,7 @@ done:
 	return status;
 }
 
-static struct usb_ep_ops omap_ep_ops = {
+static const struct usb_ep_ops omap_ep_ops = {
 	.enable		= omap_ep_enable,
 	.disable	= omap_ep_disable,
 
@@ -2875,7 +2871,7 @@ bad_on_1710:
 	xceiv = NULL;
 	/* "udc" is now valid */
 	pullup_disable(udc);
-#if	defined(CONFIG_USB_OHCI_HCD) || defined(CONFIG_USB_OHCI_HCD_MODULE)
+#if	IS_ENABLED(CONFIG_USB_OHCI_HCD)
 	udc->gadget.is_otg = (config->otg != 0);
 #endif
 

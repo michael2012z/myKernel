@@ -31,10 +31,11 @@
 #include <linux/mmu_notifier.h>
 #include <linux/mempolicy.h>
 #include <linux/swap.h>
+#include <linux/sched/mm.h>
 
 struct i915_mm_struct {
 	struct mm_struct *mm;
-	struct drm_device *dev;
+	struct drm_i915_private *i915;
 	struct i915_mmu_notifier *mn;
 	struct hlist_node node;
 	struct kref kref;
@@ -48,7 +49,8 @@ struct i915_mmu_notifier {
 	spinlock_t lock;
 	struct hlist_node node;
 	struct mmu_notifier mn;
-	struct rb_root objects;
+	struct rb_root_cached objects;
+	struct workqueue_struct *wq;
 };
 
 struct i915_mmu_object {
@@ -64,31 +66,32 @@ static void cancel_userptr(struct work_struct *work)
 {
 	struct i915_mmu_object *mo = container_of(work, typeof(*mo), work);
 	struct drm_i915_gem_object *obj = mo->obj;
-	struct drm_device *dev = obj->base.dev;
+	struct work_struct *active;
 
-	mutex_lock(&dev->struct_mutex);
 	/* Cancel any active worker and force us to re-evaluate gup */
-	obj->userptr.work = NULL;
+	mutex_lock(&obj->mm.lock);
+	active = fetch_and_zero(&obj->userptr.work);
+	mutex_unlock(&obj->mm.lock);
+	if (active)
+		goto out;
 
-	if (obj->pages != NULL) {
-		struct drm_i915_private *dev_priv = to_i915(dev);
-		struct i915_vma *vma, *tmp;
-		bool was_interruptible;
+	i915_gem_object_wait(obj, I915_WAIT_ALL, MAX_SCHEDULE_TIMEOUT, NULL);
 
-		was_interruptible = dev_priv->mm.interruptible;
-		dev_priv->mm.interruptible = false;
+	mutex_lock(&obj->base.dev->struct_mutex);
 
-		list_for_each_entry_safe(vma, tmp, &obj->vma_list, obj_link) {
-			int ret = i915_vma_unbind(vma);
-			WARN_ON(ret && ret != -EIO);
-		}
-		WARN_ON(i915_gem_object_put_pages(obj));
+	/* We are inside a kthread context and can't be interrupted */
+	if (i915_gem_object_unbind(obj) == 0)
+		__i915_gem_object_put_pages(obj, I915_MM_NORMAL);
+	WARN_ONCE(i915_gem_object_has_pages(obj),
+		  "Failed to release pages: bind_count=%d, pages_pin_count=%d, pin_global=%d\n",
+		  obj->bind_count,
+		  atomic_read(&obj->mm.pages_pin_count),
+		  obj->pin_global);
 
-		dev_priv->mm.interruptible = was_interruptible;
-	}
+	mutex_unlock(&obj->base.dev->struct_mutex);
 
-	drm_gem_object_unreference(&obj->base);
-	mutex_unlock(&dev->struct_mutex);
+out:
+	i915_gem_object_put(obj);
 }
 
 static void add_object(struct i915_mmu_object *mo)
@@ -120,7 +123,7 @@ static void i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
 	struct interval_tree_node *it;
 	LIST_HEAD(cancelled);
 
-	if (RB_EMPTY_ROOT(&mn->objects))
+	if (RB_EMPTY_ROOT(&mn->objects.rb_root))
 		return;
 
 	/* interval ranges are inclusive, but invalidate range is exclusive */
@@ -140,7 +143,7 @@ static void i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
 		 */
 		mo = container_of(it, struct i915_mmu_object, it);
 		if (kref_get_unless_zero(&mo->obj->base.refcount))
-			schedule_work(&mo->work);
+			queue_work(mn->wq, &mo->work);
 
 		list_add(&mo->link, &cancelled);
 		it = interval_tree_iter_next(it, start, end);
@@ -148,6 +151,9 @@ static void i915_gem_userptr_mn_invalidate_range_start(struct mmu_notifier *_mn,
 	list_for_each_entry(mo, &cancelled, link)
 		del_object(mo);
 	spin_unlock(&mn->lock);
+
+	if (!list_empty(&cancelled))
+		flush_workqueue(mn->wq);
 }
 
 static const struct mmu_notifier_ops i915_gem_userptr_notifier = {
@@ -158,7 +164,6 @@ static struct i915_mmu_notifier *
 i915_mmu_notifier_create(struct mm_struct *mm)
 {
 	struct i915_mmu_notifier *mn;
-	int ret;
 
 	mn = kmalloc(sizeof(*mn), GFP_KERNEL);
 	if (mn == NULL)
@@ -166,13 +171,11 @@ i915_mmu_notifier_create(struct mm_struct *mm)
 
 	spin_lock_init(&mn->lock);
 	mn->mn.ops = &i915_gem_userptr_notifier;
-	mn->objects = RB_ROOT;
-
-	 /* Protected by mmap_sem (write-lock) */
-	ret = __mmu_notifier_register(&mn->mn, mm);
-	if (ret) {
+	mn->objects = RB_ROOT_CACHED;
+	mn->wq = alloc_workqueue("i915-userptr-release", WQ_UNBOUND, 0);
+	if (mn->wq == NULL) {
 		kfree(mn);
-		return ERR_PTR(ret);
+		return ERR_PTR(-ENOMEM);
 	}
 
 	return mn;
@@ -198,23 +201,42 @@ i915_gem_userptr_release__mmu_notifier(struct drm_i915_gem_object *obj)
 static struct i915_mmu_notifier *
 i915_mmu_notifier_find(struct i915_mm_struct *mm)
 {
-	struct i915_mmu_notifier *mn = mm->mn;
+	struct i915_mmu_notifier *mn;
+	int err = 0;
 
 	mn = mm->mn;
 	if (mn)
 		return mn;
 
+	mn = i915_mmu_notifier_create(mm->mm);
+	if (IS_ERR(mn))
+		err = PTR_ERR(mn);
+
 	down_write(&mm->mm->mmap_sem);
-	mutex_lock(&to_i915(mm->dev)->mm_lock);
-	if ((mn = mm->mn) == NULL) {
-		mn = i915_mmu_notifier_create(mm->mm);
-		if (!IS_ERR(mn))
-			mm->mn = mn;
+	mutex_lock(&mm->i915->mm_lock);
+	if (mm->mn == NULL && !err) {
+		/* Protected by mmap_sem (write-lock) */
+		err = __mmu_notifier_register(&mn->mn, mm->mm);
+		if (!err) {
+			/* Protected by mm_lock */
+			mm->mn = fetch_and_zero(&mn);
+		}
+	} else if (mm->mn) {
+		/*
+		 * Someone else raced and successfully installed the mmu
+		 * notifier, we can cancel our own errors.
+		 */
+		err = 0;
 	}
-	mutex_unlock(&to_i915(mm->dev)->mm_lock);
+	mutex_unlock(&mm->i915->mm_lock);
 	up_write(&mm->mm->mmap_sem);
 
-	return mn;
+	if (mn && !IS_ERR(mn)) {
+		destroy_workqueue(mn->wq);
+		kfree(mn);
+	}
+
+	return err ? ERR_PTR(err) : mm->mn;
 }
 
 static int
@@ -256,6 +278,7 @@ i915_mmu_notifier_free(struct i915_mmu_notifier *mn,
 		return;
 
 	mmu_notifier_unregister(&mn->mn, mm);
+	destroy_workqueue(mn->wq);
 	kfree(mn);
 }
 
@@ -327,10 +350,10 @@ i915_gem_userptr_init__mm_struct(struct drm_i915_gem_object *obj)
 		}
 
 		kref_init(&mm->kref);
-		mm->dev = obj->base.dev;
+		mm->i915 = to_i915(obj->base.dev);
 
 		mm->mm = current->mm;
-		atomic_inc(&current->mm->mm_count);
+		mmgrab(current->mm);
 
 		mm->mn = NULL;
 
@@ -362,10 +385,10 @@ __i915_mm_struct_free(struct kref *kref)
 
 	/* Protected by dev_priv->mm_lock */
 	hash_del(&mm->node);
-	mutex_unlock(&to_i915(mm->dev)->mm_lock);
+	mutex_unlock(&mm->i915->mm_lock);
 
 	INIT_WORK(&mm->work, __i915_mm_struct_free__worker);
-	schedule_work(&mm->work);
+	queue_work(mm->i915->mm.userptr_wq, &mm->work);
 }
 
 static void
@@ -386,63 +409,47 @@ struct get_pages_work {
 	struct task_struct *task;
 };
 
-#if IS_ENABLED(CONFIG_SWIOTLB)
-#define swiotlb_active() swiotlb_nr_tbl()
-#else
-#define swiotlb_active() 0
-#endif
-
-static int
-st_set_pages(struct sg_table **st, struct page **pvec, int num_pages)
+static struct sg_table *
+__i915_gem_userptr_alloc_pages(struct drm_i915_gem_object *obj,
+			       struct page **pvec, int num_pages)
 {
-	struct scatterlist *sg;
-	int ret, n;
-
-	*st = kmalloc(sizeof(**st), GFP_KERNEL);
-	if (*st == NULL)
-		return -ENOMEM;
-
-	if (swiotlb_active()) {
-		ret = sg_alloc_table(*st, num_pages, GFP_KERNEL);
-		if (ret)
-			goto err;
-
-		for_each_sg((*st)->sgl, sg, num_pages, n)
-			sg_set_page(sg, pvec[n], PAGE_SIZE, 0);
-	} else {
-		ret = sg_alloc_table_from_pages(*st, pvec, num_pages,
-						0, num_pages << PAGE_SHIFT,
-						GFP_KERNEL);
-		if (ret)
-			goto err;
-	}
-
-	return 0;
-
-err:
-	kfree(*st);
-	*st = NULL;
-	return ret;
-}
-
-static int
-__i915_gem_userptr_set_pages(struct drm_i915_gem_object *obj,
-			     struct page **pvec, int num_pages)
-{
+	unsigned int max_segment = i915_sg_segment_size();
+	struct sg_table *st;
+	unsigned int sg_page_sizes;
 	int ret;
 
-	ret = st_set_pages(&obj->pages, pvec, num_pages);
-	if (ret)
-		return ret;
+	st = kmalloc(sizeof(*st), GFP_KERNEL);
+	if (!st)
+		return ERR_PTR(-ENOMEM);
 
-	ret = i915_gem_gtt_prepare_object(obj);
+alloc_table:
+	ret = __sg_alloc_table_from_pages(st, pvec, num_pages,
+					  0, num_pages << PAGE_SHIFT,
+					  max_segment,
+					  GFP_KERNEL);
 	if (ret) {
-		sg_free_table(obj->pages);
-		kfree(obj->pages);
-		obj->pages = NULL;
+		kfree(st);
+		return ERR_PTR(ret);
 	}
 
-	return ret;
+	ret = i915_gem_gtt_prepare_pages(obj, st);
+	if (ret) {
+		sg_free_table(st);
+
+		if (max_segment > PAGE_SIZE) {
+			max_segment = PAGE_SIZE;
+			goto alloc_table;
+		}
+
+		kfree(st);
+		return ERR_PTR(ret);
+	}
+
+	sg_page_sizes = i915_sg_page_sizes(st->sgl);
+
+	__i915_gem_object_set_pages(obj, st, sg_page_sizes);
+
+	return st;
 }
 
 static int
@@ -486,7 +493,6 @@ __i915_gem_userptr_get_pages_worker(struct work_struct *_work)
 {
 	struct get_pages_work *work = container_of(_work, typeof(*work), work);
 	struct drm_i915_gem_object *obj = work->obj;
-	struct drm_device *dev = obj->base.dev;
 	const int npages = obj->base.size >> PAGE_SHIFT;
 	struct page **pvec;
 	int pinned, ret;
@@ -494,23 +500,24 @@ __i915_gem_userptr_get_pages_worker(struct work_struct *_work)
 	ret = -ENOMEM;
 	pinned = 0;
 
-	pvec = kmalloc(npages*sizeof(struct page *),
-		       GFP_TEMPORARY | __GFP_NOWARN | __GFP_NORETRY);
-	if (pvec == NULL)
-		pvec = drm_malloc_ab(npages, sizeof(struct page *));
+	pvec = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
 	if (pvec != NULL) {
 		struct mm_struct *mm = obj->userptr.mm->mm;
+		unsigned int flags = 0;
+
+		if (!obj->userptr.read_only)
+			flags |= FOLL_WRITE;
 
 		ret = -EFAULT;
-		if (atomic_inc_not_zero(&mm->mm_users)) {
+		if (mmget_not_zero(mm)) {
 			down_read(&mm->mmap_sem);
 			while (pinned < npages) {
 				ret = get_user_pages_remote
 					(work->task, mm,
 					 obj->userptr.ptr + pinned * PAGE_SIZE,
 					 npages - pinned,
-					 !obj->userptr.read_only, 0,
-					 pvec + pinned, NULL);
+					 flags,
+					 pvec + pinned, NULL, NULL);
 				if (ret < 0)
 					break;
 
@@ -521,37 +528,35 @@ __i915_gem_userptr_get_pages_worker(struct work_struct *_work)
 		}
 	}
 
-	mutex_lock(&dev->struct_mutex);
+	mutex_lock(&obj->mm.lock);
 	if (obj->userptr.work == &work->work) {
+		struct sg_table *pages = ERR_PTR(ret);
+
 		if (pinned == npages) {
-			ret = __i915_gem_userptr_set_pages(obj, pvec, npages);
-			if (ret == 0) {
-				list_add_tail(&obj->global_list,
-					      &to_i915(dev)->mm.unbound_list);
-				obj->get_page.sg = obj->pages->sgl;
-				obj->get_page.last = 0;
+			pages = __i915_gem_userptr_alloc_pages(obj, pvec,
+							       npages);
+			if (!IS_ERR(pages)) {
 				pinned = 0;
+				pages = NULL;
 			}
 		}
-		obj->userptr.work = ERR_PTR(ret);
-		if (ret)
+
+		obj->userptr.work = ERR_CAST(pages);
+		if (IS_ERR(pages))
 			__i915_gem_userptr_set_active(obj, false);
 	}
+	mutex_unlock(&obj->mm.lock);
 
-	obj->userptr.workers--;
-	drm_gem_object_unreference(&obj->base);
-	mutex_unlock(&dev->struct_mutex);
+	release_pages(pvec, pinned);
+	kvfree(pvec);
 
-	release_pages(pvec, pinned, 0);
-	drm_free_large(pvec);
-
+	i915_gem_object_put(obj);
 	put_task_struct(work->task);
 	kfree(work);
 }
 
-static int
-__i915_gem_userptr_get_pages_schedule(struct drm_i915_gem_object *obj,
-				      bool *active)
+static struct sg_table *
+__i915_gem_userptr_get_pages_schedule(struct drm_i915_gem_object *obj)
 {
 	struct get_pages_work *work;
 
@@ -574,36 +579,31 @@ __i915_gem_userptr_get_pages_schedule(struct drm_i915_gem_object *obj,
 	 * that error back to this function through
 	 * obj->userptr.work = ERR_PTR.
 	 */
-	if (obj->userptr.workers >= I915_GEM_USERPTR_MAX_WORKERS)
-		return -EAGAIN;
-
 	work = kmalloc(sizeof(*work), GFP_KERNEL);
 	if (work == NULL)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	obj->userptr.work = &work->work;
-	obj->userptr.workers++;
 
-	work->obj = obj;
-	drm_gem_object_reference(&obj->base);
+	work->obj = i915_gem_object_get(obj);
 
 	work->task = current;
 	get_task_struct(work->task);
 
 	INIT_WORK(&work->work, __i915_gem_userptr_get_pages_worker);
-	schedule_work(&work->work);
+	queue_work(to_i915(obj->base.dev)->mm.userptr_wq, &work->work);
 
-	*active = true;
-	return -EAGAIN;
+	return ERR_PTR(-EAGAIN);
 }
 
-static int
-i915_gem_userptr_get_pages(struct drm_i915_gem_object *obj)
+static int i915_gem_userptr_get_pages(struct drm_i915_gem_object *obj)
 {
 	const int num_pages = obj->base.size >> PAGE_SHIFT;
+	struct mm_struct *mm = obj->userptr.mm->mm;
 	struct page **pvec;
-	int pinned, ret;
+	struct sg_table *pages;
 	bool active;
+	int pinned;
 
 	/* If userspace should engineer that these pages are replaced in
 	 * the vma between us binding this page into the GTT and completion
@@ -621,79 +621,77 @@ i915_gem_userptr_get_pages(struct drm_i915_gem_object *obj)
 	 * to the vma (discard or cloning) which should prevent the more
 	 * egregious cases from causing harm.
 	 */
-	if (IS_ERR(obj->userptr.work)) {
-		/* active flag will have been dropped already by the worker */
-		ret = PTR_ERR(obj->userptr.work);
-		obj->userptr.work = NULL;
-		return ret;
-	}
-	if (obj->userptr.work)
-		/* active flag should still be held for the pending work */
-		return -EAGAIN;
 
-	/* Let the mmu-notifier know that we have begun and need cancellation */
-	ret = __i915_gem_userptr_set_active(obj, true);
-	if (ret)
-		return ret;
+	if (obj->userptr.work) {
+		/* active flag should still be held for the pending work */
+		if (IS_ERR(obj->userptr.work))
+			return PTR_ERR(obj->userptr.work);
+		else
+			return -EAGAIN;
+	}
 
 	pvec = NULL;
 	pinned = 0;
-	if (obj->userptr.mm->mm == current->mm) {
-		pvec = kmalloc(num_pages*sizeof(struct page *),
-			       GFP_TEMPORARY | __GFP_NOWARN | __GFP_NORETRY);
-		if (pvec == NULL) {
-			pvec = drm_malloc_ab(num_pages, sizeof(struct page *));
-			if (pvec == NULL) {
-				__i915_gem_userptr_set_active(obj, false);
-				return -ENOMEM;
-			}
-		}
 
-		pinned = __get_user_pages_fast(obj->userptr.ptr, num_pages,
-					       !obj->userptr.read_only, pvec);
+	if (mm == current->mm) {
+		pvec = kvmalloc_array(num_pages, sizeof(struct page *),
+				      GFP_KERNEL |
+				      __GFP_NORETRY |
+				      __GFP_NOWARN);
+		if (pvec) /* defer to worker if malloc fails */
+			pinned = __get_user_pages_fast(obj->userptr.ptr,
+						       num_pages,
+						       !obj->userptr.read_only,
+						       pvec);
 	}
 
 	active = false;
-	if (pinned < 0)
-		ret = pinned, pinned = 0;
-	else if (pinned < num_pages)
-		ret = __i915_gem_userptr_get_pages_schedule(obj, &active);
-	else
-		ret = __i915_gem_userptr_set_pages(obj, pvec, num_pages);
-	if (ret) {
-		__i915_gem_userptr_set_active(obj, active);
-		release_pages(pvec, pinned, 0);
+	if (pinned < 0) {
+		pages = ERR_PTR(pinned);
+		pinned = 0;
+	} else if (pinned < num_pages) {
+		pages = __i915_gem_userptr_get_pages_schedule(obj);
+		active = pages == ERR_PTR(-EAGAIN);
+	} else {
+		pages = __i915_gem_userptr_alloc_pages(obj, pvec, num_pages);
+		active = !IS_ERR(pages);
 	}
-	drm_free_large(pvec);
-	return ret;
+	if (active)
+		__i915_gem_userptr_set_active(obj, true);
+
+	if (IS_ERR(pages))
+		release_pages(pvec, pinned);
+	kvfree(pvec);
+
+	return PTR_ERR_OR_ZERO(pages);
 }
 
 static void
-i915_gem_userptr_put_pages(struct drm_i915_gem_object *obj)
+i915_gem_userptr_put_pages(struct drm_i915_gem_object *obj,
+			   struct sg_table *pages)
 {
-	struct sg_page_iter sg_iter;
+	struct sgt_iter sgt_iter;
+	struct page *page;
 
 	BUG_ON(obj->userptr.work != NULL);
 	__i915_gem_userptr_set_active(obj, false);
 
-	if (obj->madv != I915_MADV_WILLNEED)
-		obj->dirty = 0;
+	if (obj->mm.madv != I915_MADV_WILLNEED)
+		obj->mm.dirty = false;
 
-	i915_gem_gtt_finish_object(obj);
+	i915_gem_gtt_finish_pages(obj, pages);
 
-	for_each_sg_page(obj->pages->sgl, &sg_iter, obj->pages->nents, 0) {
-		struct page *page = sg_page_iter_page(&sg_iter);
-
-		if (obj->dirty)
+	for_each_sgt_page(page, sgt_iter, pages) {
+		if (obj->mm.dirty)
 			set_page_dirty(page);
 
 		mark_page_accessed(page);
 		put_page(page);
 	}
-	obj->dirty = 0;
+	obj->mm.dirty = false;
 
-	sg_free_table(obj->pages);
-	kfree(obj->pages);
+	sg_free_table(pages);
+	kfree(pages);
 }
 
 static void
@@ -713,7 +711,8 @@ i915_gem_userptr_dmabuf_export(struct drm_i915_gem_object *obj)
 }
 
 static const struct drm_i915_gem_object_ops i915_gem_userptr_ops = {
-	.flags = I915_GEM_OBJECT_HAS_STRUCT_PAGE,
+	.flags = I915_GEM_OBJECT_HAS_STRUCT_PAGE |
+		 I915_GEM_OBJECT_IS_SHRINKABLE,
 	.get_pages = i915_gem_userptr_get_pages,
 	.put_pages = i915_gem_userptr_put_pages,
 	.dmabuf_export = i915_gem_userptr_dmabuf_export,
@@ -758,10 +757,18 @@ static const struct drm_i915_gem_object_ops i915_gem_userptr_ops = {
 int
 i915_gem_userptr_ioctl(struct drm_device *dev, void *data, struct drm_file *file)
 {
+	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct drm_i915_gem_userptr *args = data;
 	struct drm_i915_gem_object *obj;
 	int ret;
 	u32 handle;
+
+	if (!HAS_LLC(dev_priv) && !HAS_SNOOP(dev_priv)) {
+		/* We cannot support coherent userptr objects on hw without
+		 * LLC and broken snooping.
+		 */
+		return -ENODEV;
+	}
 
 	if (args->flags & ~(I915_USERPTR_READ_ONLY |
 			    I915_USERPTR_UNSYNCHRONIZED))
@@ -781,15 +788,15 @@ i915_gem_userptr_ioctl(struct drm_device *dev, void *data, struct drm_file *file
 		return -ENODEV;
 	}
 
-	obj = i915_gem_object_alloc(dev);
+	obj = i915_gem_object_alloc(dev_priv);
 	if (obj == NULL)
 		return -ENOMEM;
 
 	drm_gem_private_object_init(dev, &obj->base, args->user_size);
 	i915_gem_object_init(obj, &i915_gem_userptr_ops);
-	obj->cache_level = I915_CACHE_LLC;
-	obj->base.write_domain = I915_GEM_DOMAIN_CPU;
 	obj->base.read_domains = I915_GEM_DOMAIN_CPU;
+	obj->base.write_domain = I915_GEM_DOMAIN_CPU;
+	i915_gem_object_set_cache_coherency(obj, I915_CACHE_LLC);
 
 	obj->userptr.ptr = args->user_ptr;
 	obj->userptr.read_only = !!(args->flags & I915_USERPTR_READ_ONLY);
@@ -805,7 +812,7 @@ i915_gem_userptr_ioctl(struct drm_device *dev, void *data, struct drm_file *file
 		ret = drm_gem_handle_create(file, &obj->base, &handle);
 
 	/* drop reference from allocate - handle holds it now */
-	drm_gem_object_unreference_unlocked(&obj->base);
+	i915_gem_object_put(obj);
 	if (ret)
 		return ret;
 
@@ -813,11 +820,22 @@ i915_gem_userptr_ioctl(struct drm_device *dev, void *data, struct drm_file *file
 	return 0;
 }
 
-int
-i915_gem_init_userptr(struct drm_device *dev)
+int i915_gem_init_userptr(struct drm_i915_private *dev_priv)
 {
-	struct drm_i915_private *dev_priv = to_i915(dev);
 	mutex_init(&dev_priv->mm_lock);
 	hash_init(dev_priv->mm_structs);
+
+	dev_priv->mm.userptr_wq =
+		alloc_workqueue("i915-userptr-acquire",
+				WQ_HIGHPRI | WQ_MEM_RECLAIM,
+				0);
+	if (!dev_priv->mm.userptr_wq)
+		return -ENOMEM;
+
 	return 0;
+}
+
+void i915_gem_cleanup_userptr(struct drm_i915_private *dev_priv)
+{
+	destroy_workqueue(dev_priv->mm.userptr_wq);
 }

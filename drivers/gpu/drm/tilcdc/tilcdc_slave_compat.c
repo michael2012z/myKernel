@@ -139,13 +139,12 @@ static void __init tilcdc_node_disable(struct device_node *node)
 	of_update_property(node, prop);
 }
 
-struct device_node * __init tilcdc_get_overlay(struct kfree_table *kft)
+static struct device_node * __init tilcdc_get_overlay(struct kfree_table *kft)
 {
 	const int size = __dtb_tilcdc_slave_compat_end -
 		__dtb_tilcdc_slave_compat_begin;
 	static void *overlay_data;
 	struct device_node *overlay;
-	int ret;
 
 	if (!size) {
 		pr_warn("%s: No overlay data\n", __func__);
@@ -157,16 +156,9 @@ struct device_node * __init tilcdc_get_overlay(struct kfree_table *kft)
 	if (!overlay_data || kfree_table_add(kft, overlay_data))
 		return NULL;
 
-	of_fdt_unflatten_tree(overlay_data, &overlay);
+	of_fdt_unflatten_tree(overlay_data, NULL, &overlay);
 	if (!overlay) {
 		pr_warn("%s: Unfattening overlay tree failed\n", __func__);
-		return NULL;
-	}
-
-	of_node_set_flag(overlay, OF_DETACHED);
-	ret = of_resolve_phandles(overlay);
-	if (ret) {
-		pr_err("%s: Failed to resolve phandles: %d\n", __func__, ret);
 		return NULL;
 	}
 
@@ -195,7 +187,7 @@ static const char * const tilcdc_slave_props[] __initconst = {
 	NULL
 };
 
-void __init tilcdc_convert_slave_node(void)
+static void __init tilcdc_convert_slave_node(void)
 {
 	struct device_node *slave = NULL, *lcdc = NULL;
 	struct device_node *i2c = NULL, *fragment = NULL;
@@ -204,10 +196,10 @@ void __init tilcdc_convert_slave_node(void)
 	/* For all memory needed for the overlay tree. This memory can
 	   be freed after the overlay has been applied. */
 	struct kfree_table kft;
-	int ret;
+	int ovcs_id, ret;
 
 	if (kfree_table_init(&kft))
-		goto out;
+		return;
 
 	lcdc = of_find_matching_node(NULL, tilcdc_of_match);
 	slave = of_find_matching_node(NULL, tilcdc_slave_of_match);
@@ -247,9 +239,11 @@ void __init tilcdc_convert_slave_node(void)
 
 	tilcdc_node_disable(slave);
 
-	ret = of_overlay_create(overlay);
+	ovcs_id = 0;
+	ret = of_overlay_apply(overlay, &ovcs_id);
 	if (ret)
-		pr_err("%s: Creating overlay failed: %d\n", __func__, ret);
+		pr_err("%s: Applying overlay changeset failed: %d\n",
+			__func__, ret);
 	else
 		pr_info("%s: ti,tilcdc,slave node successfully converted\n",
 			__func__);
@@ -261,7 +255,7 @@ out:
 	of_node_put(fragment);
 }
 
-int __init tilcdc_slave_compat_init(void)
+static int __init tilcdc_slave_compat_init(void)
 {
 	tilcdc_convert_slave_node();
 	return 0;

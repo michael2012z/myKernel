@@ -97,7 +97,7 @@ static const struct sdhci_ops pic32_sdhci_ops = {
 	.get_ro = pic32_sdhci_get_ro,
 };
 
-static struct sdhci_pltfm_data sdhci_pic32_pdata = {
+static const struct sdhci_pltfm_data sdhci_pic32_pdata = {
 	.ops = &pic32_sdhci_ops,
 	.quirks = SDHCI_QUIRK_NO_HISPD_BIT,
 	.quirks2 = SDHCI_QUIRK2_NO_1_8_V,
@@ -243,7 +243,6 @@ MODULE_DEVICE_TABLE(of, pic32_sdhci_id_table);
 static struct platform_driver pic32_sdhci_driver = {
 	.driver = {
 		.name	= "pic32-sdhci",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(pic32_sdhci_id_table),
 	},
 	.probe		= pic32_sdhci_probe,

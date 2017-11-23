@@ -13,37 +13,49 @@
 #ifndef __VSP1_DRM_H__
 #define __VSP1_DRM_H__
 
+#include <linux/videodev2.h>
+
 #include "vsp1_pipe.h"
 
-struct vsp1_dl;
+/**
+ * vsp1_drm_pipeline - State for the API exposed to the DRM driver
+ * @pipe: the VSP1 pipeline used for display
+ * @enabled: pipeline state at the beginning of an update
+ * @du_complete: frame completion callback for the DU driver (optional)
+ * @du_private: data to be passed to the du_complete callback
+ */
+struct vsp1_drm_pipeline {
+	struct vsp1_pipeline pipe;
+	bool enabled;
+
+	/* Frame synchronisation */
+	void (*du_complete)(void *, bool);
+	void *du_private;
+};
 
 /**
  * vsp1_drm - State for the API exposed to the DRM driver
- * @dl: display list for DRM pipeline operation
- * @pipe: the VSP1 pipeline used for display
- * @num_inputs: number of active pipeline inputs at the beginning of an update
- * @update: the pipeline configuration has been updated
+ * @pipe: the VSP1 DRM pipeline used for display
+ * @inputs: source crop rectangle, destination compose rectangle and z-order
+ *	position for every input (indexed by RPF index)
  */
 struct vsp1_drm {
-	struct vsp1_dl *dl;
-	struct vsp1_pipeline pipe;
-	unsigned int num_inputs;
-	bool update;
+	struct vsp1_drm_pipeline pipe[VSP1_MAX_LIF];
+
+	struct {
+		struct v4l2_rect crop;
+		struct v4l2_rect compose;
+		unsigned int zpos;
+	} inputs[VSP1_MAX_RPF];
 };
+
+static inline struct vsp1_drm_pipeline *
+to_vsp1_drm_pipeline(struct vsp1_pipeline *pipe)
+{
+	return container_of(pipe, struct vsp1_drm_pipeline, pipe);
+}
 
 int vsp1_drm_init(struct vsp1_device *vsp1);
 void vsp1_drm_cleanup(struct vsp1_device *vsp1);
-int vsp1_drm_create_links(struct vsp1_device *vsp1);
-
-int vsp1_du_init(struct device *dev);
-int vsp1_du_setup_lif(struct device *dev, unsigned int width,
-		      unsigned int height);
-void vsp1_du_atomic_begin(struct device *dev);
-int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
-			  u32 pixelformat, unsigned int pitch,
-			  dma_addr_t mem[2], const struct v4l2_rect *src,
-			  const struct v4l2_rect *dst);
-void vsp1_du_atomic_flush(struct device *dev);
-
 
 #endif /* __VSP1_DRM_H__ */

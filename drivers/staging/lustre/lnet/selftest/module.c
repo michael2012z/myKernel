@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -61,10 +58,13 @@ lnet_selftest_exit(void)
 	switch (lst_init_step) {
 	case LST_INIT_CONSOLE:
 		lstcon_console_fini();
+		/* fall through */
 	case LST_INIT_FW:
 		sfw_shutdown();
+		/* fall through */
 	case LST_INIT_RPC:
 		srpc_shutdown();
+		/* fall through */
 	case LST_INIT_WI_TEST:
 		for (i = 0;
 		     i < cfs_cpt_number(lnet_cpt_table()); i++) {
@@ -76,7 +76,7 @@ lnet_selftest_exit(void)
 			    sizeof(lst_sched_test[0]) *
 			    cfs_cpt_number(lnet_cpt_table()));
 		lst_sched_test = NULL;
-
+		/* fall through */
 	case LST_INIT_WI_SERIAL:
 		cfs_wi_sched_destroy(lst_sched_serial);
 		lst_sched_serial = NULL;
@@ -116,7 +116,8 @@ lnet_selftest_init(void)
 		rc = cfs_wi_sched_create("lst_t", lnet_cpt_table(), i,
 					 nthrs, &lst_sched_test[i]);
 		if (rc) {
-			CERROR("Failed to create CPT affinity WI scheduler %d for LST\n", i);
+			CWARN("Failed to create CPU partition affinity WI scheduler %d for LST\n",
+			      i);
 			goto error;
 		}
 	}

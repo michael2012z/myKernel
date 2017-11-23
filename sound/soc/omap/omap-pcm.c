@@ -58,7 +58,7 @@ static void omap_pcm_limit_supported_formats(void)
 {
 	int i;
 
-	for (i = 0; i < SNDRV_PCM_FORMAT_LAST; i++) {
+	for (i = 0; i <= SNDRV_PCM_FORMAT_LAST; i++) {
 		switch (snd_pcm_format_physical_width(i)) {
 		case 8:
 		case 16:
@@ -81,6 +81,8 @@ static int omap_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct dma_slave_config config;
 	struct dma_chan *chan;
 	int err = 0;
+
+	memset(&config, 0x00, sizeof(config));
 
 	dma_data = snd_soc_dai_get_dma_data(rtd->cpu_dai, substream);
 
@@ -160,7 +162,7 @@ static int omap_pcm_mmap(struct snd_pcm_substream *substream,
 			   runtime->dma_addr, runtime->dma_bytes);
 }
 
-static struct snd_pcm_ops omap_pcm_ops = {
+static const struct snd_pcm_ops omap_pcm_ops = {
 	.open		= omap_pcm_open,
 	.close		= snd_dmaengine_pcm_close_release_chan,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -241,7 +243,7 @@ out:
 	return ret;
 }
 
-static struct snd_soc_platform_driver omap_soc_platform = {
+static const struct snd_soc_platform_driver omap_soc_platform = {
 	.ops		= &omap_pcm_ops,
 	.pcm_new	= omap_pcm_new,
 	.pcm_free	= omap_pcm_free_dma_buffers,

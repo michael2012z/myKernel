@@ -127,7 +127,7 @@
 #include <linux/if_eql.h>
 #include <linux/pkt_sched.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 static int eql_open(struct net_device *dev);
 static int eql_close(struct net_device *dev);
@@ -178,10 +178,8 @@ static void __init eql_setup(struct net_device *dev)
 {
 	equalizer_t *eql = netdev_priv(dev);
 
-	init_timer(&eql->timer);
-	eql->timer.data     	= (unsigned long) eql;
+	setup_timer(&eql->timer, eql_timer, (unsigned long)eql);
 	eql->timer.expires  	= jiffies + EQL_DEFAULT_RESCHED_IVAL;
-	eql->timer.function 	= eql_timer;
 
 	spin_lock_init(&eql->queue.lock);
 	INIT_LIST_HEAD(&eql->queue.all_slaves);

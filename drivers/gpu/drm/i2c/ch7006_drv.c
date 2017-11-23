@@ -361,13 +361,8 @@ static int ch7006_encoder_set_property(struct drm_encoder *encoder,
 
 		/* Disable the crtc to ensure a full modeset is
 		 * performed whenever it's turned on again. */
-		if (crtc) {
-			struct drm_mode_set modeset = {
-				.crtc = crtc,
-			};
-
-			drm_mode_set_config_internal(&modeset);
-		}
+		if (crtc)
+			drm_crtc_force_disable(crtc);
 	}
 
 	return 0;
@@ -490,7 +485,7 @@ static int ch7006_encoder_init(struct i2c_client *client,
 	return 0;
 }
 
-static struct i2c_device_id ch7006_ids[] = {
+static const struct i2c_device_id ch7006_ids[] = {
 	{ "ch7006", 0 },
 	{ }
 };

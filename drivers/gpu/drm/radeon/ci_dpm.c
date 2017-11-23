@@ -22,7 +22,7 @@
  */
 
 #include <linux/firmware.h>
-#include "drmP.h"
+#include <drm/drmP.h>
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "radeon_ucode.h"
@@ -184,6 +184,7 @@ static int ci_set_overdrive_target_tdp(struct radeon_device *rdev,
 				       u32 target_tdp);
 static int ci_update_uvd_dpm(struct radeon_device *rdev, bool gate);
 
+static PPSMC_Result ci_send_msg_to_smc(struct radeon_device *rdev, PPSMC_Msg msg);
 static PPSMC_Result ci_send_msg_to_smc_with_parameter(struct radeon_device *rdev,
 						      PPSMC_Msg msg, u32 parameter);
 
@@ -775,6 +776,12 @@ bool ci_dpm_vblank_too_short(struct radeon_device *rdev)
 	struct ci_power_info *pi = ci_get_pi(rdev);
 	u32 vblank_time = r600_dpm_get_vblank_time(rdev);
 	u32 switch_limit = pi->mem_gddr5 ? 450 : 300;
+
+	/* disable mclk switching if the refresh is >120Hz, even if the
+        * blanking period would allow it
+        */
+	if (r600_dpm_get_vrefresh(rdev) > 120)
+		return true;
 
 	if (vblank_time < switch_limit)
 		return true;
@@ -1644,6 +1651,27 @@ static int ci_notify_hw_of_power_source(struct radeon_device *rdev,
 	return 0;
 }
 #endif
+
+static PPSMC_Result ci_send_msg_to_smc(struct radeon_device *rdev, PPSMC_Msg msg)
+{
+	u32 tmp;
+	int i;
+
+	if (!ci_is_smc_running(rdev))
+		return PPSMC_Result_Failed;
+
+	WREG32(SMC_MESSAGE_0, msg);
+
+	for (i = 0; i < rdev->usec_timeout; i++) {
+		tmp = RREG32(SMC_RESP_0);
+		if (tmp != 0)
+			break;
+		udelay(1);
+	}
+	tmp = RREG32(SMC_RESP_0);
+
+	return (PPSMC_Result)tmp;
+}
 
 static PPSMC_Result ci_send_msg_to_smc_with_parameter(struct radeon_device *rdev,
 						      PPSMC_Msg msg, u32 parameter)
@@ -3843,7 +3871,10 @@ static void ci_find_dpm_states_clocks_in_dpm_table(struct radeon_device *rdev,
 	if (i >= sclk_table->count) {
 		pi->need_update_smu7_dpm_table |= DPMTABLE_OD_UPDATE_SCLK;
 	} else {
-		/* XXX check display min clock requirements */
+		/* XXX The current code always reprogrammed the sclk levels,
+		 * but we don't currently handle disp sclk requirements
+		 * so just skip it.
+		 */
 		if (CISLAND_MINIMUM_ENGINE_CLOCK != CISLAND_MINIMUM_ENGINE_CLOCK)
 			pi->need_update_smu7_dpm_table |= DPMTABLE_UPDATE_SCLK;
 	}

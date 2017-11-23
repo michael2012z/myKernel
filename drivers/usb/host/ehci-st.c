@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ST EHCI driver
  *
@@ -6,10 +7,6 @@
  * Author: Peter Griffin <peter.griffin@linaro.org>
  *
  * Derived from ehci-platform.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -206,7 +203,8 @@ static int st_ehci_platform_probe(struct platform_device *dev)
 		priv->clk48 = NULL;
 	}
 
-	priv->pwr = devm_reset_control_get_optional(&dev->dev, "power");
+	priv->pwr =
+		devm_reset_control_get_optional_shared(&dev->dev, "power");
 	if (IS_ERR(priv->pwr)) {
 		err = PTR_ERR(priv->pwr);
 		if (err == -EPROBE_DEFER)
@@ -214,7 +212,8 @@ static int st_ehci_platform_probe(struct platform_device *dev)
 		priv->pwr = NULL;
 	}
 
-	priv->rst = devm_reset_control_get_optional(&dev->dev, "softreset");
+	priv->rst =
+		devm_reset_control_get_optional_shared(&dev->dev, "softreset");
 	if (IS_ERR(priv->rst)) {
 		err = PTR_ERR(priv->rst);
 		if (err == -EPROBE_DEFER)

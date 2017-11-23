@@ -1019,7 +1019,7 @@ void cw1200_event_handler(struct work_struct *work)
 				NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW :
 				NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH;
 			pr_debug("[CQM] RSSI event: %d.\n", rcpi_rssi);
-			ieee80211_cqm_rssi_notify(priv->vif, cqm_evt,
+			ieee80211_cqm_rssi_notify(priv->vif, cqm_evt, rcpi_rssi,
 						  GFP_KERNEL);
 			break;
 		}
@@ -1278,7 +1278,7 @@ static void cw1200_do_join(struct cw1200_common *priv)
 	join.dtim_period = priv->join_dtim_period;
 
 	join.channel_number = priv->channel->hw_value;
-	join.band = (priv->channel->band == IEEE80211_BAND_5GHZ) ?
+	join.band = (priv->channel->band == NL80211_BAND_5GHZ) ?
 		WSM_PHY_BAND_5G : WSM_PHY_BAND_2_4G;
 
 	memcpy(join.bssid, bssid, sizeof(join.bssid));
@@ -1462,7 +1462,7 @@ int cw1200_enable_listening(struct cw1200_common *priv)
 	};
 
 	if (priv->channel) {
-		start.band = priv->channel->band == IEEE80211_BAND_5GHZ ?
+		start.band = priv->channel->band == NL80211_BAND_5GHZ ?
 			     WSM_PHY_BAND_5G : WSM_PHY_BAND_2_4G;
 		start.channel_number = priv->channel->hw_value;
 	} else {
@@ -2112,10 +2112,9 @@ void cw1200_multicast_stop_work(struct work_struct *work)
 	}
 }
 
-void cw1200_mcast_timeout(unsigned long arg)
+void cw1200_mcast_timeout(struct timer_list *t)
 {
-	struct cw1200_common *priv =
-		(struct cw1200_common *)arg;
+	struct cw1200_common *priv = from_timer(priv, t, mcast_timeout);
 
 	wiphy_warn(priv->hw->wiphy,
 		   "Multicast delivery timeout.\n");
@@ -2315,7 +2314,7 @@ static int cw1200_start_ap(struct cw1200_common *priv)
 	struct wsm_start start = {
 		.mode = priv->vif->p2p ?
 				WSM_START_MODE_P2P_GO : WSM_START_MODE_AP,
-		.band = (priv->channel->band == IEEE80211_BAND_5GHZ) ?
+		.band = (priv->channel->band == NL80211_BAND_5GHZ) ?
 				WSM_PHY_BAND_5G : WSM_PHY_BAND_2_4G,
 		.channel_number = priv->channel->hw_value,
 		.beacon_interval = conf->beacon_int,

@@ -31,37 +31,6 @@ static u32 __ipv6_select_ident(struct net *net, u32 hashrnd,
 	return id;
 }
 
-/* This function exists only for tap drivers that must support broken
- * clients requesting UFO without specifying an IPv6 fragment ID.
- *
- * This is similar to ipv6_select_ident() but we use an independent hash
- * seed to limit information leakage.
- *
- * The network header must be set before calling this.
- */
-void ipv6_proxy_select_ident(struct net *net, struct sk_buff *skb)
-{
-	static u32 ip6_proxy_idents_hashrnd __read_mostly;
-	struct in6_addr buf[2];
-	struct in6_addr *addrs;
-	u32 id;
-
-	addrs = skb_header_pointer(skb,
-				   skb_network_offset(skb) +
-				   offsetof(struct ipv6hdr, saddr),
-				   sizeof(buf), buf);
-	if (!addrs)
-		return;
-
-	net_get_random_once(&ip6_proxy_idents_hashrnd,
-			    sizeof(ip6_proxy_idents_hashrnd));
-
-	id = __ipv6_select_ident(net, ip6_proxy_idents_hashrnd,
-				 &addrs[1], &addrs[0]);
-	skb_shinfo(skb)->ip6_frag_id = htonl(id);
-}
-EXPORT_SYMBOL_GPL(ipv6_proxy_select_ident);
-
 __be32 ipv6_select_ident(struct net *net,
 			 const struct in6_addr *daddr,
 			 const struct in6_addr *saddr)
@@ -78,15 +47,14 @@ EXPORT_SYMBOL(ipv6_select_ident);
 
 int ip6_find_1stfragopt(struct sk_buff *skb, u8 **nexthdr)
 {
-	u16 offset = sizeof(struct ipv6hdr);
-	struct ipv6_opt_hdr *exthdr =
-				(struct ipv6_opt_hdr *)(ipv6_hdr(skb) + 1);
+	unsigned int offset = sizeof(struct ipv6hdr);
 	unsigned int packet_len = skb_tail_pointer(skb) -
 		skb_network_header(skb);
 	int found_rhdr = 0;
 	*nexthdr = &ipv6_hdr(skb)->nexthdr;
 
-	while (offset + 1 <= packet_len) {
+	while (offset <= packet_len) {
+		struct ipv6_opt_hdr *exthdr;
 
 		switch (**nexthdr) {
 
@@ -107,13 +75,18 @@ int ip6_find_1stfragopt(struct sk_buff *skb, u8 **nexthdr)
 			return offset;
 		}
 
-		offset += ipv6_optlen(exthdr);
-		*nexthdr = &exthdr->nexthdr;
+		if (offset + sizeof(struct ipv6_opt_hdr) > packet_len)
+			return -EINVAL;
+
 		exthdr = (struct ipv6_opt_hdr *)(skb_network_header(skb) +
 						 offset);
+		offset += ipv6_optlen(exthdr);
+		if (offset > IPV6_MAXPLEN)
+			return -EINVAL;
+		*nexthdr = &exthdr->nexthdr;
 	}
 
-	return offset;
+	return -EINVAL;
 }
 EXPORT_SYMBOL(ip6_find_1stfragopt);
 
@@ -147,6 +120,15 @@ int __ip6_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 		len = 0;
 	ipv6_hdr(skb)->payload_len = htons(len);
 	IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
+
+	/* if egress device is enslaved to an L3 master device pass the
+	 * skb to its handler for processing
+	 */
+	skb = l3mdev_ip6_out(sk, skb);
+	if (unlikely(!skb))
+		return 0;
+
+	skb->protocol = htons(ETH_P_IPV6);
 
 	return nf_hook(NFPROTO_IPV6, NF_INET_LOCAL_OUT,
 		       net, sk, skb, NULL, skb_dst(skb)->dev,

@@ -47,6 +47,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/dma-mapping.h>
 #include "vt.h"
 #include "trace.h"
 
@@ -106,6 +107,19 @@ struct rvt_dev_info *rvt_alloc_device(size_t size, int nports)
 }
 EXPORT_SYMBOL(rvt_alloc_device);
 
+/**
+ * rvt_dealloc_device - deallocate rdi
+ * @rdi: structure to free
+ *
+ * Free a structure allocated with rvt_alloc_device()
+ */
+void rvt_dealloc_device(struct rvt_dev_info *rdi)
+{
+	kfree(rdi->ports);
+	ib_dealloc_device(&rdi->ibdev);
+}
+EXPORT_SYMBOL(rvt_dealloc_device);
+
 static int rvt_query_device(struct ib_device *ibdev,
 			    struct ib_device_attr *props,
 			    struct ib_udata *uhw)
@@ -152,7 +166,7 @@ static int rvt_query_port(struct ib_device *ibdev, u8 port_num,
 		return -EINVAL;
 
 	rvp = rdi->ports[port_index];
-	memset(props, 0, sizeof(*props));
+	/* props being zeroed by the caller, avoid zeroing it here */
 	props->sm_lid = rvp->sm_lid;
 	props->sm_sl = rvp->sm_sl;
 	props->port_cap_flags = rvp->port_cap_flags;
@@ -188,8 +202,13 @@ static int rvt_modify_port(struct ib_device *ibdev, u8 port_num,
 		return -EINVAL;
 
 	rvp = rdi->ports[port_index];
-	rvp->port_cap_flags |= props->set_port_cap_mask;
-	rvp->port_cap_flags &= ~props->clr_port_cap_mask;
+	if (port_modify_mask & IB_PORT_OPA_MASK_CHG) {
+		rvp->port_cap3_flags |= props->set_port_cap_mask;
+		rvp->port_cap3_flags &= ~props->clr_port_cap_mask;
+	} else {
+		rvp->port_cap_flags |= props->set_port_cap_mask;
+		rvp->port_cap_flags &= ~props->clr_port_cap_mask;
+	}
 
 	if (props->set_port_cap_mask || props->clr_port_cap_mask)
 		rdi->driver_f.cap_mask_chg(rdi, port_num);
@@ -313,13 +332,14 @@ static int rvt_get_port_immutable(struct ib_device *ibdev, u8 port_num,
 	if (port_index < 0)
 		return -EINVAL;
 
-	err = rvt_query_port(ibdev, port_num, &attr);
+	immutable->core_cap_flags = rdi->dparms.core_cap_flags;
+
+	err = ib_query_port(ibdev, port_num, &attr);
 	if (err)
 		return err;
 
 	immutable->pkey_tbl_len = attr.pkey_tbl_len;
 	immutable->gid_tbl_len = attr.gid_tbl_len;
-	immutable->core_cap_flags = rdi->dparms.core_cap_flags;
 	immutable->max_mad_size = rdi->dparms.max_mad_size;
 
 	return 0;
@@ -357,6 +377,7 @@ enum {
 	REG_USER_MR,
 	DEREG_MR,
 	ALLOC_MR,
+	MAP_MR_SG,
 	ALLOC_FMR,
 	MAP_PHYS_FMR,
 	UNMAP_FMR,
@@ -488,9 +509,7 @@ static noinline int check_support(struct rvt_dev_info *rdi, int verb)
 			    !rdi->driver_f.quiesce_qp ||
 			    !rdi->driver_f.notify_error_qp ||
 			    !rdi->driver_f.mtu_from_qp ||
-			    !rdi->driver_f.mtu_to_path_mtu ||
-			    !rdi->driver_f.shut_down_port ||
-			    !rdi->driver_f.cap_mask_chg)
+			    !rdi->driver_f.mtu_to_path_mtu)
 				return -EINVAL;
 		break;
 
@@ -517,7 +536,8 @@ static noinline int check_support(struct rvt_dev_info *rdi, int verb)
 							 post_send),
 					   rvt_post_send))
 			if (!rdi->driver_f.schedule_send ||
-			    !rdi->driver_f.do_send)
+			    !rdi->driver_f.do_send ||
+			    !rdi->post_parms)
 				return -EINVAL;
 		break;
 
@@ -620,6 +640,12 @@ static noinline int check_support(struct rvt_dev_info *rdi, int verb)
 		check_driver_override(rdi, offsetof(struct ib_device,
 						    alloc_mr),
 				      rvt_alloc_mr);
+		break;
+
+	case MAP_MR_SG:
+		check_driver_override(rdi, offsetof(struct ib_device,
+						    map_mr_sg),
+				      rvt_map_mr_sg);
 		break;
 
 	case MAP_PHYS_FMR:
@@ -758,8 +784,7 @@ int rvt_register_device(struct rvt_dev_info *rdi)
 	}
 
 	/* DMA Operations */
-	rdi->ibdev.dma_ops =
-		rdi->ibdev.dma_ops ? : &rvt_default_dma_mapping_ops;
+	rdi->ibdev.dev.dma_ops = rdi->ibdev.dev.dma_ops ? : &dma_virt_ops;
 
 	/* Protection Domain */
 	spin_lock_init(&rdi->n_pds_lock);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -15,11 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -40,8 +37,8 @@
 
 #define DEBUG_SUBSYSTEM S_RPC
 
-#include "../include/obd_support.h"
-#include "../include/obd_class.h"
+#include <obd_support.h>
+#include <obd_class.h>
 #include "ptlrpc_internal.h"
 
 struct mutex pinger_mutex;
@@ -57,7 +54,8 @@ ptlrpc_prep_ping(struct obd_import *imp)
 					LUSTRE_OBD_VERSION, OBD_PING);
 	if (req) {
 		ptlrpc_request_set_replen(req);
-		req->rq_no_resend = req->rq_no_delay = 1;
+		req->rq_no_resend = 1;
+		req->rq_no_delay = 1;
 	}
 	return req;
 }
@@ -343,7 +341,6 @@ void ptlrpc_pinger_sending_on_import(struct obd_import *imp)
 {
 	ptlrpc_update_next_ping(imp, 0);
 }
-EXPORT_SYMBOL(ptlrpc_pinger_sending_on_import);
 
 void ptlrpc_pinger_commit_expected(struct obd_import *imp)
 {

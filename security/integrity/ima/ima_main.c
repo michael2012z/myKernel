@@ -51,6 +51,8 @@ static int __init hash_setup(char *str)
 			ima_hash_algo = HASH_ALGO_SHA1;
 		else if (strncmp(str, "md5", 3) == 0)
 			ima_hash_algo = HASH_ALGO_MD5;
+		else
+			return 1;
 		goto out;
 	}
 
@@ -60,6 +62,8 @@ static int __init hash_setup(char *str)
 			break;
 		}
 	}
+	if (i == HASH_ALGO__LAST)
+		return 1;
 out:
 	hash_setup_done = 1;
 	return 1;
@@ -83,6 +87,7 @@ static void ima_rdwr_violation_check(struct file *file,
 				     const char **pathname)
 {
 	struct inode *inode = file_inode(file);
+	char filename[NAME_MAX];
 	fmode_t mode = file->f_mode;
 	bool send_tomtou = false, send_writers = false;
 
@@ -102,7 +107,7 @@ static void ima_rdwr_violation_check(struct file *file,
 	if (!send_tomtou && !send_writers)
 		return;
 
-	*pathname = ima_d_path(&file->f_path, pathbuf);
+	*pathname = ima_d_path(&file->f_path, pathbuf, filename);
 
 	if (send_tomtou)
 		ima_add_violation(file, *pathname, iint,
@@ -125,6 +130,7 @@ static void ima_check_last_writer(struct integrity_iint_cache *iint,
 		if ((iint->version != inode->i_version) ||
 		    (iint->flags & IMA_NEW_FILE)) {
 			iint->flags &= ~(IMA_DONE_MASK | IMA_NEW_FILE);
+			iint->measured_pcrs = 0;
 			if (iint->flags & IMA_APPRAISE)
 				ima_update_xattr(iint, file);
 		}
@@ -160,8 +166,10 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	struct integrity_iint_cache *iint = NULL;
 	struct ima_template_desc *template_desc;
 	char *pathbuf = NULL;
+	char filename[NAME_MAX];
 	const char *pathname = NULL;
 	int rc = -ENOMEM, action, must_appraise;
+	int pcr = CONFIG_IMA_MEASURE_PCR_IDX;
 	struct evm_ima_xattr_data *xattr_value = NULL;
 	int xattr_len = 0;
 	bool violation_check;
@@ -174,7 +182,7 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	 * bitmask based on the appraise/audit/measurement policy.
 	 * Included is the appraise submask.
 	 */
-	action = ima_get_action(inode, mask, func);
+	action = ima_get_action(inode, mask, func, &pcr);
 	violation_check = ((func == FILE_CHECK || func == MMAP_CHECK) &&
 			   (ima_policy_flag & IMA_MEASURE));
 	if (!action && !violation_check)
@@ -209,7 +217,11 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	 */
 	iint->flags |= action;
 	action &= IMA_DO_MASK;
-	action &= ~((iint->flags & IMA_DONE_MASK) >> 1);
+	action &= ~((iint->flags & (IMA_DONE_MASK ^ IMA_MEASURED)) >> 1);
+
+	/* If target pcr is already measured, unset IMA_MEASURE action */
+	if ((action & IMA_MEASURE) && (iint->measured_pcrs & (0x1 << pcr)))
+		action ^= IMA_MEASURE;
 
 	/* Nothing to do, just return existing appraised status */
 	if (!action) {
@@ -222,31 +234,31 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	if ((action & IMA_APPRAISE_SUBMASK) ||
 		    strcmp(template_desc->name, IMA_TEMPLATE_IMA_NAME) != 0)
 		/* read 'security.ima' */
-		xattr_len = ima_read_xattr(file->f_path.dentry, &xattr_value);
+		xattr_len = ima_read_xattr(file_dentry(file), &xattr_value);
 
 	hash_algo = ima_get_hash_algo(xattr_value, xattr_len);
 
 	rc = ima_collect_measurement(iint, file, buf, size, hash_algo);
-	if (rc != 0) {
-		if (file->f_flags & O_DIRECT)
-			rc = (iint->flags & IMA_PERMIT_DIRECTIO) ? 0 : -EACCES;
+	if (rc != 0 && rc != -EBADF && rc != -EINVAL)
 		goto out_digsig;
-	}
 
-	if (!pathname)	/* ima_rdwr_violation possibly pre-fetched */
-		pathname = ima_d_path(&file->f_path, &pathbuf);
+	if (!pathbuf)	/* ima_rdwr_violation possibly pre-fetched */
+		pathname = ima_d_path(&file->f_path, &pathbuf, filename);
 
 	if (action & IMA_MEASURE)
 		ima_store_measurement(iint, file, pathname,
-				      xattr_value, xattr_len);
-	if (action & IMA_APPRAISE_SUBMASK)
+				      xattr_value, xattr_len, pcr);
+	if (rc == 0 && (action & IMA_APPRAISE_SUBMASK))
 		rc = ima_appraise_measurement(func, iint, file, pathname,
 					      xattr_value, xattr_len, opened);
 	if (action & IMA_AUDIT)
 		ima_audit_measurement(iint, pathname);
 
+	if ((file->f_flags & O_DIRECT) && (iint->flags & IMA_PERMIT_DIRECTIO))
+		rc = 0;
 out_digsig:
-	if ((mask & MAY_WRITE) && (iint->flags & IMA_DIGSIG))
+	if ((mask & MAY_WRITE) && (iint->flags & IMA_DIGSIG) &&
+	     !(iint->flags & IMA_NEW_FILE))
 		rc = -EACCES;
 	kfree(xattr_value);
 out_free:
@@ -300,7 +312,7 @@ int ima_bprm_check(struct linux_binprm *bprm)
 /**
  * ima_path_check - based on policy, collect/store measurement.
  * @file: pointer to the file to be measured
- * @mask: contains MAY_READ, MAY_WRITE or MAY_EXECUTE
+ * @mask: contains MAY_READ, MAY_WRITE, MAY_EXEC or MAY_APPEND
  *
  * Measure files based on the ima_must_measure() policy decision.
  *
@@ -310,10 +322,32 @@ int ima_bprm_check(struct linux_binprm *bprm)
 int ima_file_check(struct file *file, int mask, int opened)
 {
 	return process_measurement(file, NULL, 0,
-				   mask & (MAY_READ | MAY_WRITE | MAY_EXEC),
-				   FILE_CHECK, opened);
+				   mask & (MAY_READ | MAY_WRITE | MAY_EXEC |
+					   MAY_APPEND), FILE_CHECK, opened);
 }
 EXPORT_SYMBOL_GPL(ima_file_check);
+
+/**
+ * ima_post_path_mknod - mark as a new inode
+ * @dentry: newly created dentry
+ *
+ * Mark files created via the mknodat syscall as new, so that the
+ * file data can be written later.
+ */
+void ima_post_path_mknod(struct dentry *dentry)
+{
+	struct integrity_iint_cache *iint;
+	struct inode *inode = dentry->d_inode;
+	int must_appraise;
+
+	must_appraise = ima_must_appraise(inode, MAY_ACCESS, FILE_CHECK);
+	if (!must_appraise)
+		return;
+
+	iint = integrity_inode_get(inode);
+	if (iint)
+		iint->flags |= IMA_NEW_FILE;
+}
 
 /**
  * ima_read_file - pre-measure/appraise hook decision based on policy
@@ -328,12 +362,12 @@ EXPORT_SYMBOL_GPL(ima_file_check);
  */
 int ima_read_file(struct file *file, enum kernel_read_file_id read_id)
 {
+	bool sig_enforce = is_module_sig_enforced();
+
 	if (!file && read_id == READING_MODULE) {
-#ifndef CONFIG_MODULE_SIG_FORCE
-		if ((ima_appraise & IMA_APPRAISE_MODULES) &&
+		if (!sig_enforce && (ima_appraise & IMA_APPRAISE_MODULES) &&
 		    (ima_appraise & IMA_APPRAISE_ENFORCE))
 			return -EACCES;	/* INTEGRITY_UNKNOWN */
-#endif
 		return 0;	/* We rely on module signature checking */
 	}
 	return 0;
@@ -375,6 +409,10 @@ int ima_post_read_file(struct file *file, void *buf, loff_t size,
 	if (!file && read_id == READING_MODULE) /* MODULE_SIG_FORCE enabled */
 		return 0;
 
+	/* permit signed certs */
+	if (!file && read_id == READING_X509_CERTIFICATE)
+		return 0;
+
 	if (!file || !buf || size == 0) { /* should never happen */
 		if (ima_appraise & IMA_APPRAISE_ENFORCE)
 			return -EACCES;
@@ -389,6 +427,7 @@ static int __init init_ima(void)
 {
 	int error;
 
+	ima_init_template_list();
 	hash_setup(CONFIG_IMA_DEFAULT_HASH);
 	error = ima_init();
 	if (!error) {

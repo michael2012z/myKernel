@@ -79,18 +79,21 @@ struct amd_nb {
 
 /* The maximal number of PEBS events: */
 #define MAX_PEBS_EVENTS		8
+#define PEBS_COUNTER_MASK	((1ULL << MAX_PEBS_EVENTS) - 1)
 
 /*
  * Flags PEBS can handle without an PMI.
  *
  * TID can only be handled by flushing at context switch.
+ * REGS_USER can be handled for events limited to ring 3.
  *
  */
 #define PEBS_FREERUNNING_FLAGS \
 	(PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_ADDR | \
 	PERF_SAMPLE_ID | PERF_SAMPLE_CPU | PERF_SAMPLE_STREAM_ID | \
 	PERF_SAMPLE_DATA_SRC | PERF_SAMPLE_IDENTIFIER | \
-	PERF_SAMPLE_TRANSACTION)
+	PERF_SAMPLE_TRANSACTION | PERF_SAMPLE_PHYS_ADDR | \
+	PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER)
 
 /*
  * A debug store configuration.
@@ -109,11 +112,31 @@ struct debug_store {
 	u64	pebs_event_reset[MAX_PEBS_EVENTS];
 };
 
+#define PEBS_REGS \
+	(PERF_REG_X86_AX | \
+	 PERF_REG_X86_BX | \
+	 PERF_REG_X86_CX | \
+	 PERF_REG_X86_DX | \
+	 PERF_REG_X86_DI | \
+	 PERF_REG_X86_SI | \
+	 PERF_REG_X86_SP | \
+	 PERF_REG_X86_BP | \
+	 PERF_REG_X86_IP | \
+	 PERF_REG_X86_FLAGS | \
+	 PERF_REG_X86_R8 | \
+	 PERF_REG_X86_R9 | \
+	 PERF_REG_X86_R10 | \
+	 PERF_REG_X86_R11 | \
+	 PERF_REG_X86_R12 | \
+	 PERF_REG_X86_R13 | \
+	 PERF_REG_X86_R14 | \
+	 PERF_REG_X86_R15)
+
 /*
  * Per register state.
  */
 struct er_account {
-	raw_spinlock_t		lock;	/* per-core: protect structure */
+	raw_spinlock_t      lock;	/* per-core: protect structure */
 	u64                 config;	/* extra MSR config */
 	u64                 reg;	/* extra MSR number */
 	atomic_t            ref;	/* reference count */
@@ -194,12 +217,13 @@ struct cpu_hw_events {
 	 */
 	struct debug_store	*ds;
 	u64			pebs_enabled;
+	int			n_pebs;
+	int			n_large_pebs;
 
 	/*
 	 * Intel LBR bits
 	 */
 	int				lbr_users;
-	void				*lbr_context;
 	struct perf_branch_stack	lbr_stack;
 	struct perf_branch_entry	lbr_entries[MAX_LBR_ENTRIES];
 	struct er_account		*lbr_sel;
@@ -508,6 +532,8 @@ struct x86_pmu {
 	void		(*enable_all)(int added);
 	void		(*enable)(struct perf_event *);
 	void		(*disable)(struct perf_event *);
+	void		(*add)(struct perf_event *);
+	void		(*del)(struct perf_event *);
 	int		(*hw_config)(struct perf_event *event);
 	int		(*schedule_events)(struct cpu_hw_events *cpuc, int n, int *assign);
 	unsigned	eventsel;
@@ -554,9 +580,13 @@ struct x86_pmu {
 	int		attr_rdpmc;
 	struct attribute **format_attrs;
 	struct attribute **event_attrs;
+	struct attribute **caps_attrs;
 
 	ssize_t		(*events_sysfs_show)(char *page, u64 config);
 	struct attribute **cpu_events;
+
+	unsigned long	attr_freeze_on_smi;
+	struct attribute **attrs;
 
 	/*
 	 * CPU Hotplug hooks
@@ -584,7 +614,8 @@ struct x86_pmu {
 			pebs		:1,
 			pebs_active	:1,
 			pebs_broken	:1,
-			pebs_prec_dist	:1;
+			pebs_prec_dist	:1,
+			pebs_no_tlb	:1;
 	int		pebs_record_size;
 	int		pebs_buffer_size;
 	void		(*drain_pebs)(struct pt_regs *regs);
@@ -601,6 +632,7 @@ struct x86_pmu {
 	u64		lbr_sel_mask;		   /* LBR_SELECT valid bits */
 	const int	*lbr_sel_map;		   /* lbr_select mappings */
 	bool		lbr_double_abort;	   /* duplicated lbr aborts */
+	bool		lbr_pt_coexist;		   /* (LBR|BTS) may coexist with PT */
 
 	/*
 	 * Intel PT/LBR/BTS are exclusive
@@ -667,6 +699,14 @@ static struct perf_pmu_events_attr event_attr_##v = {			\
 	.event_str	= str,						\
 };
 
+#define EVENT_ATTR_STR_HT(_name, v, noht, ht)				\
+static struct perf_pmu_events_ht_attr event_attr_##v = {		\
+	.attr		= __ATTR(_name, 0444, events_ht_sysfs_show, NULL),\
+	.id		= 0,						\
+	.event_str_noht	= noht,						\
+	.event_str_ht	= ht,						\
+}
+
 extern struct x86_pmu x86_pmu __read_mostly;
 
 static inline bool x86_pmu_has_lbr_callstack(void)
@@ -724,6 +764,8 @@ void x86_del_exclusive(unsigned int what);
 int x86_reserve_hardware(void);
 
 void x86_release_hardware(void);
+
+int x86_pmu_max_precise(void);
 
 void hw_perf_lbr_event_destroy(struct perf_event *event);
 
@@ -802,6 +844,8 @@ struct attribute **merge_attr(struct attribute **a, struct attribute **b);
 
 ssize_t events_sysfs_show(struct device *dev, struct device_attribute *attr,
 			  char *page);
+ssize_t events_ht_sysfs_show(struct device *dev, struct device_attribute *attr,
+			  char *page);
 
 #ifdef CONFIG_CPU_SUP_AMD
 
@@ -859,6 +903,10 @@ extern struct event_constraint intel_atom_pebs_event_constraints[];
 
 extern struct event_constraint intel_slm_pebs_event_constraints[];
 
+extern struct event_constraint intel_glm_pebs_event_constraints[];
+
+extern struct event_constraint intel_glp_pebs_event_constraints[];
+
 extern struct event_constraint intel_nehalem_pebs_event_constraints[];
 
 extern struct event_constraint intel_westmere_pebs_event_constraints[];
@@ -875,6 +923,10 @@ extern struct event_constraint intel_skl_pebs_event_constraints[];
 
 struct event_constraint *intel_pebs_constraints(struct perf_event *event);
 
+void intel_pmu_pebs_add(struct perf_event *event);
+
+void intel_pmu_pebs_del(struct perf_event *event);
+
 void intel_pmu_pebs_enable(struct perf_event *event);
 
 void intel_pmu_pebs_disable(struct perf_event *event);
@@ -889,11 +941,13 @@ void intel_ds_init(void);
 
 void intel_pmu_lbr_sched_task(struct perf_event_context *ctx, bool sched_in);
 
+u64 lbr_from_signext_quirk_wr(u64 val);
+
 void intel_pmu_lbr_reset(void);
 
-void intel_pmu_lbr_enable(struct perf_event *event);
+void intel_pmu_lbr_add(struct perf_event *event);
 
-void intel_pmu_lbr_disable(struct perf_event *event);
+void intel_pmu_lbr_del(struct perf_event *event);
 
 void intel_pmu_lbr_enable_all(bool pmi);
 
@@ -907,6 +961,8 @@ void intel_pmu_lbr_init_nhm(void);
 
 void intel_pmu_lbr_init_atom(void);
 
+void intel_pmu_lbr_init_slm(void);
+
 void intel_pmu_lbr_init_snb(void);
 
 void intel_pmu_lbr_init_hsw(void);
@@ -916,6 +972,8 @@ void intel_pmu_lbr_init_skl(void);
 void intel_pmu_lbr_init_knl(void);
 
 void intel_pmu_pebs_data_source_nhm(void);
+
+void intel_pmu_pebs_data_source_skl(bool pmem);
 
 int intel_pmu_setup_lbr_filter(struct perf_event *event);
 

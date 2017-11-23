@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_PARISC_FTRACE_H
 #define _ASM_PARISC_FTRACE_H
 
@@ -5,6 +6,8 @@
 extern void mcount(void);
 
 #define MCOUNT_INSN_SIZE 4
+
+extern unsigned long sys_call_table[];
 
 extern unsigned long return_address(unsigned int);
 

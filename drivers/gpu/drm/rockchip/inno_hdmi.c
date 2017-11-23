@@ -224,7 +224,7 @@ static void inno_hdmi_set_pwr_mode(struct inno_hdmi *hdmi, int mode)
 		break;
 
 	default:
-		dev_err(hdmi->dev, "Unknown power mode %d\n", mode);
+		DRM_DEV_ERROR(hdmi->dev, "Unknown power mode %d\n", mode);
 	}
 }
 
@@ -294,7 +294,7 @@ static int inno_hdmi_config_video_avi(struct inno_hdmi *hdmi,
 	union hdmi_infoframe frame;
 	int rc;
 
-	rc = drm_hdmi_avi_infoframe_from_display_mode(&frame.avi, mode);
+	rc = drm_hdmi_avi_infoframe_from_display_mode(&frame.avi, mode, false);
 
 	if (hdmi->hdmi_data.enc_out_format == HDMI_COLORSPACE_YUV444)
 		frame.avi.colorspace = HDMI_COLORSPACE_YUV444;
@@ -500,9 +500,6 @@ static void inno_hdmi_encoder_enable(struct drm_encoder *encoder)
 {
 	struct inno_hdmi *hdmi = to_inno_hdmi(encoder);
 
-	rockchip_drm_crtc_mode_config(encoder->crtc, DRM_MODE_CONNECTOR_HDMIA,
-				      ROCKCHIP_OUT_MODE_P888);
-
 	inno_hdmi_set_pwr_mode(hdmi, NORMAL);
 }
 
@@ -520,11 +517,25 @@ static bool inno_hdmi_encoder_mode_fixup(struct drm_encoder *encoder,
 	return true;
 }
 
+static int
+inno_hdmi_encoder_atomic_check(struct drm_encoder *encoder,
+			       struct drm_crtc_state *crtc_state,
+			       struct drm_connector_state *conn_state)
+{
+	struct rockchip_crtc_state *s = to_rockchip_crtc_state(crtc_state);
+
+	s->output_mode = ROCKCHIP_OUT_MODE_P888;
+	s->output_type = DRM_MODE_CONNECTOR_HDMIA;
+
+	return 0;
+}
+
 static struct drm_encoder_helper_funcs inno_hdmi_encoder_helper_funcs = {
 	.enable     = inno_hdmi_encoder_enable,
 	.disable    = inno_hdmi_encoder_disable,
 	.mode_fixup = inno_hdmi_encoder_mode_fixup,
 	.mode_set   = inno_hdmi_encoder_mode_set,
+	.atomic_check = inno_hdmi_encoder_atomic_check,
 };
 
 static struct drm_encoder_funcs inno_hdmi_encoder_funcs = {
@@ -568,14 +579,6 @@ inno_hdmi_connector_mode_valid(struct drm_connector *connector,
 	return MODE_OK;
 }
 
-static struct drm_encoder *
-inno_hdmi_connector_best_encoder(struct drm_connector *connector)
-{
-	struct inno_hdmi *hdmi = to_inno_hdmi(connector);
-
-	return &hdmi->encoder;
-}
-
 static int
 inno_hdmi_probe_single_connector_modes(struct drm_connector *connector,
 				       uint32_t maxX, uint32_t maxY)
@@ -589,8 +592,7 @@ static void inno_hdmi_connector_destroy(struct drm_connector *connector)
 	drm_connector_cleanup(connector);
 }
 
-static struct drm_connector_funcs inno_hdmi_connector_funcs = {
-	.dpms = drm_atomic_helper_connector_dpms,
+static const struct drm_connector_funcs inno_hdmi_connector_funcs = {
 	.fill_modes = inno_hdmi_probe_single_connector_modes,
 	.detect = inno_hdmi_connector_detect,
 	.destroy = inno_hdmi_connector_destroy,
@@ -602,7 +604,6 @@ static struct drm_connector_funcs inno_hdmi_connector_funcs = {
 static struct drm_connector_helper_funcs inno_hdmi_connector_helper_funcs = {
 	.get_modes = inno_hdmi_connector_get_modes,
 	.mode_valid = inno_hdmi_connector_mode_valid,
-	.best_encoder = inno_hdmi_connector_best_encoder,
 };
 
 static int inno_hdmi_register(struct drm_device *drm, struct inno_hdmi *hdmi)
@@ -741,8 +742,9 @@ static int inno_hdmi_i2c_xfer(struct i2c_adapter *adap,
 	hdmi_writeb(hdmi, HDMI_INTERRUPT_STATUS1, m_INT_EDID_READY);
 
 	for (i = 0; i < num; i++) {
-		dev_dbg(hdmi->dev, "xfer: num: %d/%d, len: %d, flags: %#x\n",
-			i + 1, num, msgs[i].len, msgs[i].flags);
+		DRM_DEV_DEBUG(hdmi->dev,
+			      "xfer: num: %d/%d, len: %d, flags: %#x\n",
+			      i + 1, num, msgs[i].len, msgs[i].flags);
 
 		if (msgs[i].flags & I2C_M_RD)
 			ret = inno_hdmi_i2c_read(hdmi, &msgs[i]);
@@ -805,7 +807,7 @@ static struct i2c_adapter *inno_hdmi_i2c_adapter(struct inno_hdmi *hdmi)
 
 	hdmi->i2c = i2c;
 
-	dev_info(hdmi->dev, "registered %s I2C bus driver\n", adap->name);
+	DRM_DEV_INFO(hdmi->dev, "registered %s I2C bus driver\n", adap->name);
 
 	return adap;
 }
@@ -837,13 +839,14 @@ static int inno_hdmi_bind(struct device *dev, struct device *master,
 
 	hdmi->pclk = devm_clk_get(hdmi->dev, "pclk");
 	if (IS_ERR(hdmi->pclk)) {
-		dev_err(hdmi->dev, "Unable to get HDMI pclk clk\n");
+		DRM_DEV_ERROR(hdmi->dev, "Unable to get HDMI pclk clk\n");
 		return PTR_ERR(hdmi->pclk);
 	}
 
 	ret = clk_prepare_enable(hdmi->pclk);
 	if (ret) {
-		dev_err(hdmi->dev, "Cannot enable HDMI pclk clock: %d\n", ret);
+		DRM_DEV_ERROR(hdmi->dev,
+			      "Cannot enable HDMI pclk clock: %d\n", ret);
 		return ret;
 	}
 
@@ -855,8 +858,9 @@ static int inno_hdmi_bind(struct device *dev, struct device *master,
 
 	hdmi->ddc = inno_hdmi_i2c_adapter(hdmi);
 	if (IS_ERR(hdmi->ddc)) {
+		ret = PTR_ERR(hdmi->ddc);
 		hdmi->ddc = NULL;
-		return PTR_ERR(hdmi->ddc);
+		return ret;
 	}
 
 	/*
@@ -920,7 +924,7 @@ static const struct of_device_id inno_hdmi_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, inno_hdmi_dt_ids);
 
-static struct platform_driver inno_hdmi_driver = {
+struct platform_driver inno_hdmi_driver = {
 	.probe  = inno_hdmi_probe,
 	.remove = inno_hdmi_remove,
 	.driver = {
@@ -928,11 +932,3 @@ static struct platform_driver inno_hdmi_driver = {
 		.of_match_table = inno_hdmi_dt_ids,
 	},
 };
-
-module_platform_driver(inno_hdmi_driver);
-
-MODULE_AUTHOR("Zheng Yang <zhengyang@rock-chips.com>");
-MODULE_AUTHOR("Yakir Yang <ykk@rock-chips.com>");
-MODULE_DESCRIPTION("Rockchip Specific INNO-HDMI Driver");
-MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:innohdmi-rockchip");

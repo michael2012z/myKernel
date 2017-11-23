@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 /*
  * sisusb - usb kernel driver for SiS315(E) based USB2VGA dongles
  *
@@ -610,13 +611,11 @@ static int sisusb_write_memio_byte(struct sisusb_usb_data *sisusb, int type,
 		u32 addr, u8 data)
 {
 	struct sisusb_packet packet;
-	int ret;
 
 	packet.header  = (1 << (addr & 3)) | (type << 6);
 	packet.address = addr & ~3;
 	packet.data    = data << ((addr & 3) << 3);
-	ret = sisusb_send_packet(sisusb, 10, &packet);
-	return ret;
+	return sisusb_send_packet(sisusb, 10, &packet);
 }
 
 static int sisusb_write_memio_word(struct sisusb_usb_data *sisusb, int type,
@@ -1285,18 +1284,22 @@ int sisusb_readb(struct sisusb_usb_data *sisusb, u32 adr, u8 *data)
 }
 
 int sisusb_copy_memory(struct sisusb_usb_data *sisusb, char *src,
-		u32 dest, int length, size_t *bytes_written)
+		u32 dest, int length)
 {
+	size_t dummy;
+
 	return sisusb_write_mem_bulk(sisusb, dest, src, length,
-			NULL, 0, bytes_written);
+			NULL, 0, &dummy);
 }
 
 #ifdef SISUSBENDIANTEST
-int sisusb_read_memory(struct sisusb_usb_data *sisusb, char *dest,
-		u32 src, int length, size_t *bytes_written)
+static int sisusb_read_memory(struct sisusb_usb_data *sisusb, char *dest,
+		u32 src, int length)
 {
+	size_t dummy;
+
 	return sisusb_read_mem_bulk(sisusb, src, dest, length,
-			NULL, bytes_written);
+			NULL, &dummy);
 }
 #endif
 #endif
@@ -1306,16 +1309,14 @@ static void sisusb_testreadwrite(struct sisusb_usb_data *sisusb)
 {
 	static char srcbuffer[] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
 	char destbuffer[10];
-	size_t dummy;
 	int i, j;
 
-	sisusb_copy_memory(sisusb, srcbuffer, sisusb->vrambase, 7, &dummy);
+	sisusb_copy_memory(sisusb, srcbuffer, sisusb->vrambase, 7);
 
 	for (i = 1; i <= 7; i++) {
 		dev_dbg(&sisusb->sisusb_dev->dev,
 				"sisusb: rwtest %d bytes\n", i);
-		sisusb_read_memory(sisusb, destbuffer, sisusb->vrambase,
-				i, &dummy);
+		sisusb_read_memory(sisusb, destbuffer, sisusb->vrambase, i);
 		for (j = 0; j < i; j++) {
 			dev_dbg(&sisusb->sisusb_dev->dev,
 					"rwtest read[%d] = %x\n",
@@ -1331,13 +1332,11 @@ static int sisusb_write_pci_config(struct sisusb_usb_data *sisusb,
 		int regnum, u32 data)
 {
 	struct sisusb_packet packet;
-	int ret;
 
 	packet.header = 0x008f;
 	packet.address = regnum | 0x10000;
 	packet.data = data;
-	ret = sisusb_send_packet(sisusb, 10, &packet);
-	return ret;
+	return sisusb_send_packet(sisusb, 10, &packet);
 }
 
 static int sisusb_read_pci_config(struct sisusb_usb_data *sisusb,
@@ -1829,16 +1828,10 @@ static int sisusb_set_default_mode(struct sisusb_usb_data *sisusb,
 	SETIREGANDOR(SISCR, 0x09, 0x5f, ((crtcdata[16] & 0x01) << 5));
 	SETIREG(SISCR, 0x14, 0x4f);
 	du = (modex / 16) * (bpp * 2);	/* offset/pitch */
-	if (modex % 16)
-		du += bpp;
-
 	SETIREGANDOR(SISSR, 0x0e, 0xf0, ((du >> 8) & 0x0f));
 	SETIREG(SISCR, 0x13, (du & 0xff));
 	du <<= 5;
 	tmp8 = du >> 8;
-	if (du & 0xff)
-		tmp8++;
-
 	SETIREG(SISSR, 0x10, tmp8);
 	SETIREG(SISSR, 0x31, 0x00);	/* VCLK */
 	SETIREG(SISSR, 0x2b, 0x1b);
@@ -2276,7 +2269,6 @@ int sisusb_reset_text_mode(struct sisusb_usb_data *sisusb, int init)
 	const struct font_desc *myfont;
 	u8 *tempbuf;
 	u16 *tempbufb;
-	size_t written;
 	static const char bootstring[] =
 		"SiSUSB VGA text console, (C) 2005 Thomas Winischhofer.";
 	static const char bootlogo[] = "(o_ //\\ V_/_";
@@ -2343,18 +2335,15 @@ int sisusb_reset_text_mode(struct sisusb_usb_data *sisusb, int init)
 				*(tempbufb++) = 0x0700 | bootstring[i++];
 
 			ret |= sisusb_copy_memory(sisusb, tempbuf,
-					sisusb->vrambase, 8192, &written);
+					sisusb->vrambase, 8192);
 
 			vfree(tempbuf);
 
 		}
 
 	} else if (sisusb->scrbuf) {
-
 		ret |= sisusb_copy_memory(sisusb, (char *)sisusb->scrbuf,
-				sisusb->vrambase, sisusb->scrbuf_size,
-				&written);
-
+				sisusb->vrambase, sisusb->scrbuf_size);
 	}
 
 	if (sisusb->sisusb_cursor_size_from >= 0 &&
@@ -2420,7 +2409,7 @@ static int sisusb_open(struct inode *inode, struct file *file)
 
 	if (!sisusb->devinit) {
 		if (sisusb->sisusb_dev->speed == USB_SPEED_HIGH ||
-				sisusb->sisusb_dev->speed == USB_SPEED_SUPER) {
+				sisusb->sisusb_dev->speed >= USB_SPEED_SUPER) {
 			if (sisusb_init_gfxdevice(sisusb, 0)) {
 				mutex_unlock(&sisusb->lock);
 				dev_err(&sisusb->sisusb_dev->dev,
@@ -2990,14 +2979,11 @@ err_out:
 static long sisusb_compat_ioctl(struct file *f, unsigned int cmd,
 		unsigned long arg)
 {
-	long retval;
-
 	switch (cmd) {
 	case SISUSB_GET_CONFIG_SIZE:
 	case SISUSB_GET_CONFIG:
 	case SISUSB_COMMAND:
-		retval = sisusb_ioctl(f, cmd, arg);
-		return retval;
+		return sisusb_ioctl(f, cmd, arg);
 
 	default:
 		return -ENOIOCTLCMD;
@@ -3086,7 +3072,6 @@ static int sisusb_probe(struct usb_interface *intf,
 	/* Allocate URBs */
 	sisusb->sisurbin = usb_alloc_urb(0, GFP_KERNEL);
 	if (!sisusb->sisurbin) {
-		dev_err(&sisusb->sisusb_dev->dev, "Failed to allocate URBs\n");
 		retval = -ENOMEM;
 		goto error_3;
 	}
@@ -3095,8 +3080,6 @@ static int sisusb_probe(struct usb_interface *intf,
 	for (i = 0; i < sisusb->numobufs; i++) {
 		sisusb->sisurbout[i] = usb_alloc_urb(0, GFP_KERNEL);
 		if (!sisusb->sisurbout[i]) {
-			dev_err(&sisusb->sisusb_dev->dev,
-					"Failed to allocate URBs\n");
 			retval = -ENOMEM;
 			goto error_4;
 		}
@@ -3127,7 +3110,7 @@ static int sisusb_probe(struct usb_interface *intf,
 
 	sisusb->present = 1;
 
-	if (dev->speed == USB_SPEED_HIGH || dev->speed == USB_SPEED_SUPER) {
+	if (dev->speed == USB_SPEED_HIGH || dev->speed >= USB_SPEED_SUPER) {
 		int initscreen = 1;
 #ifdef INCL_SISUSB_CON
 		if (sisusb_first_vc > 0 && sisusb_last_vc > 0 &&

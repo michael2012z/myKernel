@@ -70,12 +70,6 @@
 			 NETIF_MSG_TIMER | NETIF_MSG_IFDOWN | NETIF_MSG_IFUP |\
 			 NETIF_MSG_RX_ERR | NETIF_MSG_TX_ERR)
 
-static int dflt_msg_enable = DFLT_MSG_ENABLE;
-
-module_param(dflt_msg_enable, int, 0644);
-MODULE_PARM_DESC(dflt_msg_enable,
-		 "default adapter ethtool message level bitmap");
-
 /*
  * The driver uses the best interrupt scheme available on a platform in the
  * order MSI-X then MSI.  This parameter determines which of these schemes the
@@ -164,20 +158,23 @@ void t4vf_os_link_changed(struct adapter *adapter, int pidx, int link_ok)
 		netif_carrier_on(dev);
 
 		switch (pi->link_cfg.speed) {
-		case 40000:
-			s = "40Gbps";
+		case 100:
+			s = "100Mbps";
 			break;
-
+		case 1000:
+			s = "1Gbps";
+			break;
 		case 10000:
 			s = "10Gbps";
 			break;
-
-		case 1000:
-			s = "1000Mbps";
+		case 25000:
+			s = "25Gbps";
 			break;
-
-		case 100:
-			s = "100Mbps";
+		case 40000:
+			s = "40Gbps";
+			break;
+		case 100000:
+			s = "100Gbps";
 			break;
 
 		default:
@@ -185,7 +182,7 @@ void t4vf_os_link_changed(struct adapter *adapter, int pidx, int link_ok)
 			break;
 		}
 
-		switch (pi->link_cfg.fc) {
+		switch ((int)pi->link_cfg.fc) {
 		case PAUSE_RX:
 			fc = "RX";
 			break;
@@ -194,7 +191,7 @@ void t4vf_os_link_changed(struct adapter *adapter, int pidx, int link_ok)
 			fc = "TX";
 			break;
 
-		case PAUSE_RX|PAUSE_TX:
+		case PAUSE_RX | PAUSE_TX:
 			fc = "RX/TX";
 			break;
 
@@ -936,12 +933,8 @@ static int set_rxmode(struct net_device *dev, int mtu, bool sleep_ok)
 {
 	struct port_info *pi = netdev_priv(dev);
 
-	if (!(dev->flags & IFF_PROMISC)) {
-		__dev_uc_sync(dev, cxgb4vf_mac_sync, cxgb4vf_mac_unsync);
-		if (!(dev->flags & IFF_ALLMULTI))
-			__dev_mc_sync(dev, cxgb4vf_mac_sync,
-				      cxgb4vf_mac_unsync);
-	}
+	__dev_uc_sync(dev, cxgb4vf_mac_sync, cxgb4vf_mac_unsync);
+	__dev_mc_sync(dev, cxgb4vf_mac_sync, cxgb4vf_mac_unsync);
 	return t4vf_set_rxmode(pi->adapter, pi->viid, -1,
 			       (dev->flags & IFF_PROMISC) != 0,
 			       (dev->flags & IFF_ALLMULTI) != 0,
@@ -1111,10 +1104,6 @@ static int cxgb4vf_change_mtu(struct net_device *dev, int new_mtu)
 	int ret;
 	struct port_info *pi = netdev_priv(dev);
 
-	/* accommodate SACK */
-	if (new_mtu < 81)
-		return -EINVAL;
-
 	ret = t4vf_set_rxmode(pi->adapter, pi->viid, new_mtu,
 			      -1, -1, -1, -1, true);
 	if (!ret)
@@ -1204,105 +1193,268 @@ static void cxgb4vf_poll_controller(struct net_device *dev)
  * state of the port to which we're linked.
  */
 
-static unsigned int t4vf_from_fw_linkcaps(enum fw_port_type type,
-					  unsigned int caps)
+/**
+ *	from_fw_port_mod_type - translate Firmware Port/Module type to Ethtool
+ *	@port_type: Firmware Port Type
+ *	@mod_type: Firmware Module Type
+ *
+ *	Translate Firmware Port/Module type to Ethtool Port Type.
+ */
+static int from_fw_port_mod_type(enum fw_port_type port_type,
+				 enum fw_port_module_type mod_type)
 {
-	unsigned int v = 0;
-
-	if (type == FW_PORT_TYPE_BT_SGMII || type == FW_PORT_TYPE_BT_XFI ||
-	    type == FW_PORT_TYPE_BT_XAUI) {
-		v |= SUPPORTED_TP;
-		if (caps & FW_PORT_CAP_SPEED_100M)
-			v |= SUPPORTED_100baseT_Full;
-		if (caps & FW_PORT_CAP_SPEED_1G)
-			v |= SUPPORTED_1000baseT_Full;
-		if (caps & FW_PORT_CAP_SPEED_10G)
-			v |= SUPPORTED_10000baseT_Full;
-	} else if (type == FW_PORT_TYPE_KX4 || type == FW_PORT_TYPE_KX) {
-		v |= SUPPORTED_Backplane;
-		if (caps & FW_PORT_CAP_SPEED_1G)
-			v |= SUPPORTED_1000baseKX_Full;
-		if (caps & FW_PORT_CAP_SPEED_10G)
-			v |= SUPPORTED_10000baseKX4_Full;
-	} else if (type == FW_PORT_TYPE_KR)
-		v |= SUPPORTED_Backplane | SUPPORTED_10000baseKR_Full;
-	else if (type == FW_PORT_TYPE_BP_AP)
-		v |= SUPPORTED_Backplane | SUPPORTED_10000baseR_FEC |
-		     SUPPORTED_10000baseKR_Full | SUPPORTED_1000baseKX_Full;
-	else if (type == FW_PORT_TYPE_BP4_AP)
-		v |= SUPPORTED_Backplane | SUPPORTED_10000baseR_FEC |
-		     SUPPORTED_10000baseKR_Full | SUPPORTED_1000baseKX_Full |
-		     SUPPORTED_10000baseKX4_Full;
-	else if (type == FW_PORT_TYPE_FIBER_XFI ||
-		 type == FW_PORT_TYPE_FIBER_XAUI ||
-		 type == FW_PORT_TYPE_SFP ||
-		 type == FW_PORT_TYPE_QSFP_10G ||
-		 type == FW_PORT_TYPE_QSA) {
-		v |= SUPPORTED_FIBRE;
-		if (caps & FW_PORT_CAP_SPEED_1G)
-			v |= SUPPORTED_1000baseT_Full;
-		if (caps & FW_PORT_CAP_SPEED_10G)
-			v |= SUPPORTED_10000baseT_Full;
-	} else if (type == FW_PORT_TYPE_BP40_BA ||
-		   type == FW_PORT_TYPE_QSFP) {
-		v |= SUPPORTED_40000baseSR4_Full;
-		v |= SUPPORTED_FIBRE;
+	if (port_type == FW_PORT_TYPE_BT_SGMII ||
+	    port_type == FW_PORT_TYPE_BT_XFI ||
+	    port_type == FW_PORT_TYPE_BT_XAUI) {
+		return PORT_TP;
+	} else if (port_type == FW_PORT_TYPE_FIBER_XFI ||
+		   port_type == FW_PORT_TYPE_FIBER_XAUI) {
+		return PORT_FIBRE;
+	} else if (port_type == FW_PORT_TYPE_SFP ||
+		   port_type == FW_PORT_TYPE_QSFP_10G ||
+		   port_type == FW_PORT_TYPE_QSA ||
+		   port_type == FW_PORT_TYPE_QSFP ||
+		   port_type == FW_PORT_TYPE_CR4_QSFP ||
+		   port_type == FW_PORT_TYPE_CR_QSFP ||
+		   port_type == FW_PORT_TYPE_CR2_QSFP ||
+		   port_type == FW_PORT_TYPE_SFP28) {
+		if (mod_type == FW_PORT_MOD_TYPE_LR ||
+		    mod_type == FW_PORT_MOD_TYPE_SR ||
+		    mod_type == FW_PORT_MOD_TYPE_ER ||
+		    mod_type == FW_PORT_MOD_TYPE_LRM)
+			return PORT_FIBRE;
+		else if (mod_type == FW_PORT_MOD_TYPE_TWINAX_PASSIVE ||
+			 mod_type == FW_PORT_MOD_TYPE_TWINAX_ACTIVE)
+			return PORT_DA;
+		else
+			return PORT_OTHER;
+	} else if (port_type == FW_PORT_TYPE_KR4_100G ||
+		   port_type == FW_PORT_TYPE_KR_SFP28) {
+		return PORT_NONE;
 	}
 
-	if (caps & FW_PORT_CAP_ANEG)
-		v |= SUPPORTED_Autoneg;
-	return v;
+	return PORT_OTHER;
 }
 
-static int cxgb4vf_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+/**
+ *	fw_caps_to_lmm - translate Firmware to ethtool Link Mode Mask
+ *	@port_type: Firmware Port Type
+ *	@fw_caps: Firmware Port Capabilities
+ *	@link_mode_mask: ethtool Link Mode Mask
+ *
+ *	Translate a Firmware Port Capabilities specification to an ethtool
+ *	Link Mode Mask.
+ */
+static void fw_caps_to_lmm(enum fw_port_type port_type,
+			   unsigned int fw_caps,
+			   unsigned long *link_mode_mask)
 {
-	const struct port_info *p = netdev_priv(dev);
+	#define SET_LMM(__lmm_name) \
+		__set_bit(ETHTOOL_LINK_MODE_ ## __lmm_name ## _BIT, \
+			  link_mode_mask)
 
-	if (p->port_type == FW_PORT_TYPE_BT_SGMII ||
-	    p->port_type == FW_PORT_TYPE_BT_XFI ||
-	    p->port_type == FW_PORT_TYPE_BT_XAUI)
-		cmd->port = PORT_TP;
-	else if (p->port_type == FW_PORT_TYPE_FIBER_XFI ||
-		 p->port_type == FW_PORT_TYPE_FIBER_XAUI)
-		cmd->port = PORT_FIBRE;
-	else if (p->port_type == FW_PORT_TYPE_SFP ||
-		 p->port_type == FW_PORT_TYPE_QSFP_10G ||
-		 p->port_type == FW_PORT_TYPE_QSA ||
-		 p->port_type == FW_PORT_TYPE_QSFP) {
-		if (p->mod_type == FW_PORT_MOD_TYPE_LR ||
-		    p->mod_type == FW_PORT_MOD_TYPE_SR ||
-		    p->mod_type == FW_PORT_MOD_TYPE_ER ||
-		    p->mod_type == FW_PORT_MOD_TYPE_LRM)
-			cmd->port = PORT_FIBRE;
-		else if (p->mod_type == FW_PORT_MOD_TYPE_TWINAX_PASSIVE ||
-			 p->mod_type == FW_PORT_MOD_TYPE_TWINAX_ACTIVE)
-			cmd->port = PORT_DA;
-		else
-			cmd->port = PORT_OTHER;
-	} else
-		cmd->port = PORT_OTHER;
+	#define FW_CAPS_TO_LMM(__fw_name, __lmm_name) \
+		do { \
+			if (fw_caps & FW_PORT_CAP32_ ## __fw_name) \
+				SET_LMM(__lmm_name); \
+		} while (0)
 
-	if (p->mdio_addr >= 0) {
-		cmd->phy_address = p->mdio_addr;
-		cmd->transceiver = XCVR_EXTERNAL;
-		cmd->mdio_support = p->port_type == FW_PORT_TYPE_BT_SGMII ?
-			MDIO_SUPPORTS_C22 : MDIO_SUPPORTS_C45;
-	} else {
-		cmd->phy_address = 0;  /* not really, but no better option */
-		cmd->transceiver = XCVR_INTERNAL;
-		cmd->mdio_support = 0;
+	switch (port_type) {
+	case FW_PORT_TYPE_BT_SGMII:
+	case FW_PORT_TYPE_BT_XFI:
+	case FW_PORT_TYPE_BT_XAUI:
+		SET_LMM(TP);
+		FW_CAPS_TO_LMM(SPEED_100M, 100baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_10G, 10000baseT_Full);
+		break;
+
+	case FW_PORT_TYPE_KX4:
+	case FW_PORT_TYPE_KX:
+		SET_LMM(Backplane);
+		FW_CAPS_TO_LMM(SPEED_1G, 1000baseKX_Full);
+		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKX4_Full);
+		break;
+
+	case FW_PORT_TYPE_KR:
+		SET_LMM(Backplane);
+		SET_LMM(10000baseKR_Full);
+		break;
+
+	case FW_PORT_TYPE_BP_AP:
+		SET_LMM(Backplane);
+		SET_LMM(10000baseR_FEC);
+		SET_LMM(10000baseKR_Full);
+		SET_LMM(1000baseKX_Full);
+		break;
+
+	case FW_PORT_TYPE_BP4_AP:
+		SET_LMM(Backplane);
+		SET_LMM(10000baseR_FEC);
+		SET_LMM(10000baseKR_Full);
+		SET_LMM(1000baseKX_Full);
+		SET_LMM(10000baseKX4_Full);
+		break;
+
+	case FW_PORT_TYPE_FIBER_XFI:
+	case FW_PORT_TYPE_FIBER_XAUI:
+	case FW_PORT_TYPE_SFP:
+	case FW_PORT_TYPE_QSFP_10G:
+	case FW_PORT_TYPE_QSA:
+		SET_LMM(FIBRE);
+		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_10G, 10000baseT_Full);
+		break;
+
+	case FW_PORT_TYPE_BP40_BA:
+	case FW_PORT_TYPE_QSFP:
+		SET_LMM(FIBRE);
+		SET_LMM(40000baseSR4_Full);
+		break;
+
+	case FW_PORT_TYPE_CR_QSFP:
+	case FW_PORT_TYPE_SFP28:
+		SET_LMM(FIBRE);
+		SET_LMM(25000baseCR_Full);
+		break;
+
+	case FW_PORT_TYPE_KR_SFP28:
+		SET_LMM(Backplane);
+		SET_LMM(25000baseKR_Full);
+		break;
+
+	case FW_PORT_TYPE_CR2_QSFP:
+		SET_LMM(FIBRE);
+		SET_LMM(50000baseSR2_Full);
+		break;
+
+	case FW_PORT_TYPE_KR4_100G:
+	case FW_PORT_TYPE_CR4_QSFP:
+		SET_LMM(FIBRE);
+		SET_LMM(100000baseCR4_Full);
+		break;
+
+	default:
+		break;
 	}
 
-	cmd->supported = t4vf_from_fw_linkcaps(p->port_type,
-					       p->link_cfg.supported);
-	cmd->advertising = t4vf_from_fw_linkcaps(p->port_type,
-					    p->link_cfg.advertising);
-	ethtool_cmd_speed_set(cmd,
-			      netif_carrier_ok(dev) ? p->link_cfg.speed : 0);
-	cmd->duplex = DUPLEX_FULL;
-	cmd->autoneg = p->link_cfg.autoneg;
-	cmd->maxtxpkt = 0;
-	cmd->maxrxpkt = 0;
+	FW_CAPS_TO_LMM(ANEG, Autoneg);
+	FW_CAPS_TO_LMM(802_3_PAUSE, Pause);
+	FW_CAPS_TO_LMM(802_3_ASM_DIR, Asym_Pause);
+
+	#undef FW_CAPS_TO_LMM
+	#undef SET_LMM
+}
+
+static int cxgb4vf_get_link_ksettings(struct net_device *dev,
+				  struct ethtool_link_ksettings *link_ksettings)
+{
+	struct port_info *pi = netdev_priv(dev);
+	struct ethtool_link_settings *base = &link_ksettings->base;
+
+	/* For the nonce, the Firmware doesn't send up Port State changes
+	 * when the Virtual Interface attached to the Port is down.  So
+	 * if it's down, let's grab any changes.
+	 */
+	if (!netif_running(dev))
+		(void)t4vf_update_port_info(pi);
+
+	ethtool_link_ksettings_zero_link_mode(link_ksettings, supported);
+	ethtool_link_ksettings_zero_link_mode(link_ksettings, advertising);
+	ethtool_link_ksettings_zero_link_mode(link_ksettings, lp_advertising);
+
+	base->port = from_fw_port_mod_type(pi->port_type, pi->mod_type);
+
+	if (pi->mdio_addr >= 0) {
+		base->phy_address = pi->mdio_addr;
+		base->mdio_support = (pi->port_type == FW_PORT_TYPE_BT_SGMII
+				      ? ETH_MDIO_SUPPORTS_C22
+				      : ETH_MDIO_SUPPORTS_C45);
+	} else {
+		base->phy_address = 255;
+		base->mdio_support = 0;
+	}
+
+	fw_caps_to_lmm(pi->port_type, pi->link_cfg.pcaps,
+		       link_ksettings->link_modes.supported);
+	fw_caps_to_lmm(pi->port_type, pi->link_cfg.acaps,
+		       link_ksettings->link_modes.advertising);
+	fw_caps_to_lmm(pi->port_type, pi->link_cfg.lpacaps,
+		       link_ksettings->link_modes.lp_advertising);
+
+	if (netif_carrier_ok(dev)) {
+		base->speed = pi->link_cfg.speed;
+		base->duplex = DUPLEX_FULL;
+	} else {
+		base->speed = SPEED_UNKNOWN;
+		base->duplex = DUPLEX_UNKNOWN;
+	}
+
+	base->autoneg = pi->link_cfg.autoneg;
+	if (pi->link_cfg.pcaps & FW_PORT_CAP32_ANEG)
+		ethtool_link_ksettings_add_link_mode(link_ksettings,
+						     supported, Autoneg);
+	if (pi->link_cfg.autoneg)
+		ethtool_link_ksettings_add_link_mode(link_ksettings,
+						     advertising, Autoneg);
+
+	return 0;
+}
+
+/* Translate the Firmware FEC value into the ethtool value. */
+static inline unsigned int fwcap_to_eth_fec(unsigned int fw_fec)
+{
+	unsigned int eth_fec = 0;
+
+	if (fw_fec & FW_PORT_CAP32_FEC_RS)
+		eth_fec |= ETHTOOL_FEC_RS;
+	if (fw_fec & FW_PORT_CAP32_FEC_BASER_RS)
+		eth_fec |= ETHTOOL_FEC_BASER;
+
+	/* if nothing is set, then FEC is off */
+	if (!eth_fec)
+		eth_fec = ETHTOOL_FEC_OFF;
+
+	return eth_fec;
+}
+
+/* Translate Common Code FEC value into ethtool value. */
+static inline unsigned int cc_to_eth_fec(unsigned int cc_fec)
+{
+	unsigned int eth_fec = 0;
+
+	if (cc_fec & FEC_AUTO)
+		eth_fec |= ETHTOOL_FEC_AUTO;
+	if (cc_fec & FEC_RS)
+		eth_fec |= ETHTOOL_FEC_RS;
+	if (cc_fec & FEC_BASER_RS)
+		eth_fec |= ETHTOOL_FEC_BASER;
+
+	/* if nothing is set, then FEC is off */
+	if (!eth_fec)
+		eth_fec = ETHTOOL_FEC_OFF;
+
+	return eth_fec;
+}
+
+static int cxgb4vf_get_fecparam(struct net_device *dev,
+				struct ethtool_fecparam *fec)
+{
+	const struct port_info *pi = netdev_priv(dev);
+	const struct link_config *lc = &pi->link_cfg;
+
+	/* Translate the Firmware FEC Support into the ethtool value.  We
+	 * always support IEEE 802.3 "automatic" selection of Link FEC type if
+	 * any FEC is supported.
+	 */
+	fec->fec = fwcap_to_eth_fec(lc->pcaps);
+	if (fec->fec != ETHTOOL_FEC_OFF)
+		fec->fec |= ETHTOOL_FEC_AUTO;
+
+	/* Translate the current internal FEC parameters into the
+	 * ethtool values.
+	 */
+	fec->active_fec = cc_to_eth_fec(lc->fec);
 	return 0;
 }
 
@@ -1678,7 +1830,8 @@ static void cxgb4vf_get_wol(struct net_device *dev,
 #define TSO_FLAGS (NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN)
 
 static const struct ethtool_ops cxgb4vf_ethtool_ops = {
-	.get_settings		= cxgb4vf_get_settings,
+	.get_link_ksettings	= cxgb4vf_get_link_ksettings,
+	.get_fecparam		= cxgb4vf_get_fecparam,
 	.get_drvinfo		= cxgb4vf_get_drvinfo,
 	.get_msglevel		= cxgb4vf_get_msglevel,
 	.set_msglevel		= cxgb4vf_set_msglevel,
@@ -1701,6 +1854,105 @@ static const struct ethtool_ops cxgb4vf_ethtool_ops = {
  * /sys/kernel/debug/cxgb4vf support code and data.
  * ================================================
  */
+
+/*
+ * Show Firmware Mailbox Command/Reply Log
+ *
+ * Note that we don't do any locking when dumping the Firmware Mailbox Log so
+ * it's possible that we can catch things during a log update and therefore
+ * see partially corrupted log entries.  But i9t's probably Good Enough(tm).
+ * If we ever decide that we want to make sure that we're dumping a coherent
+ * log, we'd need to perform locking in the mailbox logging and in
+ * mboxlog_open() where we'd need to grab the entire mailbox log in one go
+ * like we do for the Firmware Device Log.  But as stated above, meh ...
+ */
+static int mboxlog_show(struct seq_file *seq, void *v)
+{
+	struct adapter *adapter = seq->private;
+	struct mbox_cmd_log *log = adapter->mbox_log;
+	struct mbox_cmd *entry;
+	int entry_idx, i;
+
+	if (v == SEQ_START_TOKEN) {
+		seq_printf(seq,
+			   "%10s  %15s  %5s  %5s  %s\n",
+			   "Seq#", "Tstamp", "Atime", "Etime",
+			   "Command/Reply");
+		return 0;
+	}
+
+	entry_idx = log->cursor + ((uintptr_t)v - 2);
+	if (entry_idx >= log->size)
+		entry_idx -= log->size;
+	entry = mbox_cmd_log_entry(log, entry_idx);
+
+	/* skip over unused entries */
+	if (entry->timestamp == 0)
+		return 0;
+
+	seq_printf(seq, "%10u  %15llu  %5d  %5d",
+		   entry->seqno, entry->timestamp,
+		   entry->access, entry->execute);
+	for (i = 0; i < MBOX_LEN / 8; i++) {
+		u64 flit = entry->cmd[i];
+		u32 hi = (u32)(flit >> 32);
+		u32 lo = (u32)flit;
+
+		seq_printf(seq, "  %08x %08x", hi, lo);
+	}
+	seq_puts(seq, "\n");
+	return 0;
+}
+
+static inline void *mboxlog_get_idx(struct seq_file *seq, loff_t pos)
+{
+	struct adapter *adapter = seq->private;
+	struct mbox_cmd_log *log = adapter->mbox_log;
+
+	return ((pos <= log->size) ? (void *)(uintptr_t)(pos + 1) : NULL);
+}
+
+static void *mboxlog_start(struct seq_file *seq, loff_t *pos)
+{
+	return *pos ? mboxlog_get_idx(seq, *pos) : SEQ_START_TOKEN;
+}
+
+static void *mboxlog_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	++*pos;
+	return mboxlog_get_idx(seq, *pos);
+}
+
+static void mboxlog_stop(struct seq_file *seq, void *v)
+{
+}
+
+static const struct seq_operations mboxlog_seq_ops = {
+	.start = mboxlog_start,
+	.next  = mboxlog_next,
+	.stop  = mboxlog_stop,
+	.show  = mboxlog_show
+};
+
+static int mboxlog_open(struct inode *inode, struct file *file)
+{
+	int res = seq_open(file, &mboxlog_seq_ops);
+
+	if (!res) {
+		struct seq_file *seq = file->private_data;
+
+		seq->private = inode->i_private;
+	}
+	return res;
+}
+
+static const struct file_operations mboxlog_fops = {
+	.owner   = THIS_MODULE,
+	.open    = mboxlog_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release,
+};
 
 /*
  * Show SGE Queue Set information.  We display QPL Queues Sets per line.
@@ -2121,6 +2373,7 @@ struct cxgb4vf_debugfs_entry {
 };
 
 static struct cxgb4vf_debugfs_entry debugfs_files[] = {
+	{ "mboxlog",    S_IRUGO, &mboxlog_fops },
 	{ "sge_qinfo",  S_IRUGO, &sge_qinfo_debugfs_fops },
 	{ "sge_qstats", S_IRUGO, &sge_qstats_proc_fops },
 	{ "resources",  S_IRUGO, &resources_proc_fops },
@@ -2199,7 +2452,7 @@ static void size_nports_qsets(struct adapter *adapter)
 	 */
 	pmask_nports = hweight32(adapter->params.vfres.pmask);
 	if (pmask_nports < adapter->params.nports) {
-		dev_warn(adapter->pdev_dev, "only using %d of %d provissioned"
+		dev_warn(adapter->pdev_dev, "only using %d of %d provisioned"
 			 " virtual interfaces; limited by Port Access Rights"
 			 " mask %#x\n", pmask_nports, adapter->params.nports,
 			 adapter->params.vfres.pmask);
@@ -2598,6 +2851,7 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	struct adapter *adapter;
 	struct port_info *pi;
 	struct net_device *netdev;
+	unsigned int pf;
 
 	/*
 	 * Print our driver banner the first time we're called to initialize a
@@ -2663,10 +2917,22 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	adapter->pdev = pdev;
 	adapter->pdev_dev = &pdev->dev;
 
+	adapter->mbox_log = kzalloc(sizeof(*adapter->mbox_log) +
+				    (sizeof(struct mbox_cmd) *
+				     T4VF_OS_LOG_MBOX_CMDS),
+				    GFP_KERNEL);
+	if (!adapter->mbox_log) {
+		err = -ENOMEM;
+		goto err_free_adapter;
+	}
+	adapter->mbox_log->size = T4VF_OS_LOG_MBOX_CMDS;
+
 	/*
 	 * Initialize SMP data synchronization resources.
 	 */
 	spin_lock_init(&adapter->stats_lock);
+	spin_lock_init(&adapter->mbox_lock);
+	INIT_LIST_HEAD(&adapter->mlist.list);
 
 	/*
 	 * Map our I/O registers in BAR0.
@@ -2703,7 +2969,25 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	 * Initialize adapter level features.
 	 */
 	adapter->name = pci_name(pdev);
-	adapter->msg_enable = dflt_msg_enable;
+	adapter->msg_enable = DFLT_MSG_ENABLE;
+
+	/* If possible, we use PCIe Relaxed Ordering Attribute to deliver
+	 * Ingress Packet Data to Free List Buffers in order to allow for
+	 * chipset performance optimizations between the Root Complex and
+	 * Memory Controllers.  (Messages to the associated Ingress Queue
+	 * notifying new Packet Placement in the Free Lists Buffers will be
+	 * send without the Relaxed Ordering Attribute thus guaranteeing that
+	 * all preceding PCIe Transaction Layer Packets will be processed
+	 * first.)  But some Root Complexes have various issues with Upstream
+	 * Transaction Layer Packets with the Relaxed Ordering Attribute set.
+	 * The PCIe devices which under the Root Complexes will be cleared the
+	 * Relaxed Ordering bit in the configuration space, So we check our
+	 * PCIe configuration space to see if it's flagged with advice against
+	 * using Relaxed Ordering.
+	 */
+	if (!pcie_relaxed_ordering_enabled(pdev))
+		adapter->flags |= ROOT_NO_RELAXED_ORDERING;
+
 	err = adap_init0(adapter);
 	if (err)
 		goto err_unmap_bar;
@@ -2712,8 +2996,11 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	 * Allocate our "adapter ports" and stitch everything together.
 	 */
 	pmask = adapter->params.vfres.pmask;
+	pf = t4vf_get_pf_from_vf(adapter);
 	for_each_port(adapter, pidx) {
 		int port_id, viid;
+		u8 mac[ETH_ALEN];
+		unsigned int naddr = 1;
 
 		/*
 		 * We simplistically allocate our virtual interfaces
@@ -2771,9 +3058,12 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 			netdev->features |= NETIF_F_HIGHDMA;
 
 		netdev->priv_flags |= IFF_UNICAST_FLT;
+		netdev->min_mtu = 81;
+		netdev->max_mtu = ETH_MAX_MTU;
 
 		netdev->netdev_ops = &cxgb4vf_netdev_ops;
 		netdev->ethtool_ops = &cxgb4vf_ethtool_ops;
+		netdev->dev_port = pi->port_id;
 
 		/*
 		 * Initialize the hardware/software state for the port.
@@ -2783,6 +3073,26 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 			dev_err(&pdev->dev, "cannot initialize port %d\n",
 				pidx);
 			goto err_free_dev;
+		}
+
+		err = t4vf_get_vf_mac_acl(adapter, pf, &naddr, mac);
+		if (err) {
+			dev_err(&pdev->dev,
+				"unable to determine MAC ACL address, "
+				"continuing anyway.. (status %d)\n", err);
+		} else if (naddr && adapter->params.vfres.nvi == 1) {
+			struct sockaddr addr;
+
+			ether_addr_copy(addr.sa_data, mac);
+			err = cxgb4vf_set_mac_addr(netdev, &addr);
+			if (err) {
+				dev_err(&pdev->dev,
+					"unable to set MAC address %pM\n",
+					mac);
+				goto err_free_dev;
+			}
+			dev_info(&pdev->dev,
+				 "Using assigned MAC ACL: %pM\n", mac);
 		}
 	}
 
@@ -2912,6 +3222,7 @@ err_unmap_bar0:
 	iounmap(adapter->regs);
 
 err_free_adapter:
+	kfree(adapter->mbox_log);
 	kfree(adapter);
 
 err_release_regions:
@@ -2981,6 +3292,7 @@ static void cxgb4vf_pci_remove(struct pci_dev *pdev)
 		iounmap(adapter->regs);
 		if (!is_t4(adapter->params.chip))
 			iounmap(adapter->bar2);
+		kfree(adapter->mbox_log);
 		kfree(adapter);
 	}
 
